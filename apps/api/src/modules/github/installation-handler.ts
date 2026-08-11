@@ -1,6 +1,7 @@
 import type { WebhookStore } from "@codekeat/database";
 import type { Context } from "probot";
 
+import { isAllowedGithubAccount } from "./github-account.js";
 import { type DeliveryOutcome, processWebhookDelivery } from "./webhook-delivery.js";
 
 type InstallationEventName =
@@ -15,7 +16,7 @@ type InstallationContext = Context<InstallationEventName>;
 
 interface InstallationDependencies {
   readonly store: WebhookStore;
-  readonly allowedOrganizations: ReadonlySet<string>;
+  readonly allowedAccounts: ReadonlySet<string>;
 }
 
 interface GitHubRepository {
@@ -31,17 +32,14 @@ export async function handleInstallationCreated(
   await processWebhookDelivery(dependencies.store, deliveryFor(context), async () => {
     const installation = context.payload.installation;
 
-    const organizationLogin = allowedOrganization(
-      context.payload.organization?.login,
-      dependencies,
-    );
-    if (organizationLogin === null) {
-      return ignored("organization_not_allowed");
+    const accountLogin = allowedAccountLogin(installation.account, dependencies);
+    if (accountLogin === null) {
+      return ignored("github_account_not_allowed");
     }
 
     dependencies.store.upsertInstallation({
       githubInstallationId: installation.id,
-      organizationLogin,
+      accountLogin,
       status: "active",
     });
 
@@ -63,18 +61,15 @@ export async function handleInstallationUnsuspended(
 ): Promise<void> {
   await processWebhookDelivery(dependencies.store, deliveryFor(context), async () => {
     const installation = context.payload.installation;
-    const organizationLogin = allowedOrganization(
-      context.payload.organization?.login,
-      dependencies,
-    );
 
-    if (organizationLogin === null) {
-      return ignored("organization_not_allowed");
+    const accountLogin = allowedAccountLogin(installation.account, dependencies);
+    if (accountLogin === null) {
+      return ignored("github_account_not_allowed");
     }
 
     dependencies.store.upsertInstallation({
       githubInstallationId: installation.id,
-      organizationLogin,
+      accountLogin,
       status: "active",
     });
     return handled();
@@ -148,17 +143,15 @@ function deliveryFor(context: InstallationContext): {
   };
 }
 
-function allowedOrganization(
-  organizationLogin: string | undefined,
+function allowedAccountLogin(
+  account: Context<"installation.created">["payload"]["installation"]["account"],
   dependencies: InstallationDependencies,
 ): string | null {
-  if (organizationLogin === undefined) {
+  if (account === null || !("login" in account)) {
     return null;
   }
 
-  return dependencies.allowedOrganizations.has(organizationLogin.toLowerCase())
-    ? organizationLogin
-    : null;
+  return isAllowedGithubAccount(account.login, dependencies.allowedAccounts) ? account.login : null;
 }
 
 function upsertRepositories(

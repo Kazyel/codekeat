@@ -29,8 +29,8 @@ Uma entrega identificável de evento do GitHub recebida pelo Codekeat.
 _Avoid_: Request, message
 
 **Installation**:
-O vínculo entre uma organização GitHub e o Codekeat que define os repositórios aos quais o produto tem acesso.
-_Avoid_: Account, tenant
+O vínculo entre uma conta GitHub — organização ou perfil pessoal — e o Codekeat que define os repositórios aos quais o produto tem acesso.
+_Avoid_: Tenant
 
 **Repository Access**:
 O estado que indica se um repositório concedido por uma Installation pode receber Reviews.

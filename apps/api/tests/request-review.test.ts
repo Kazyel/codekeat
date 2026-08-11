@@ -12,7 +12,7 @@ import { createTestDatabase } from "./test-database.js";
 const reviewRequest: RequestReview = {
   deliveryId: "delivery-1",
   installationId: 10,
-  organizationLogin: "takeat",
+  accountLogin: "takeat",
   repositoryId: 20,
   repositoryOwner: "takeat",
   repositoryName: "codekeat",
@@ -141,7 +141,7 @@ class FixedPolicyResolver implements RepositoryPolicyResolver {
 function prepareActiveRepository(database: ReturnType<typeof createTestDatabase>): void {
   database.store.upsertInstallation({
     githubInstallationId: reviewRequest.installationId,
-    organizationLogin: reviewRequest.organizationLogin,
+    accountLogin: reviewRequest.accountLogin,
     status: "active",
   });
   database.store.upsertRepository({

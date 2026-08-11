@@ -1,17 +1,30 @@
 import { z } from "zod";
 
-const environmentSchema = z.object({
-  APP_ID: z.string().trim().min(1),
-  PRIVATE_KEY: z.string().trim().min(1),
-  WEBHOOK_SECRET: z.string().trim().min(1),
-  DATABASE_PATH: z.string().trim().min(1),
-  ALLOWED_GITHUB_ORGANIZATIONS: z.string().transform(parseAllowedOrganizations),
-  REVIEW_MODE: z.literal("advisory"),
-});
+const optionalEnvironmentValue = z
+  .string()
+  .trim()
+  .transform((value) => (value === "" ? undefined : value))
+  .pipe(z.string().min(1).optional())
+  .optional();
+
+const environmentSchema = z
+  .object({
+    APP_ID: z.string().trim().min(1),
+    PRIVATE_KEY: optionalEnvironmentValue,
+    PRIVATE_KEY_PATH: optionalEnvironmentValue,
+    WEBHOOK_SECRET: z.string().trim().min(1),
+    DATABASE_PATH: z.string().trim().min(1),
+    ALLOWED_GITHUB_ACCOUNTS: z.string().transform(parseAllowedAccounts),
+    REVIEW_MODE: z.literal("advisory"),
+  })
+  .refine((values) => values.PRIVATE_KEY !== undefined || values.PRIVATE_KEY_PATH !== undefined, {
+    message: "Configure PRIVATE_KEY or PRIVATE_KEY_PATH.",
+    path: ["PRIVATE_KEY"],
+  });
 
 export interface ApplicationEnvironment {
   readonly databasePath: string;
-  readonly allowedGithubOrganizations: ReadonlySet<string>;
+  readonly allowedGithubAccounts: ReadonlySet<string>;
 }
 
 export function loadEnvironment(values: NodeJS.ProcessEnv): ApplicationEnvironment {
@@ -19,19 +32,19 @@ export function loadEnvironment(values: NodeJS.ProcessEnv): ApplicationEnvironme
 
   return {
     databasePath: parsed.DATABASE_PATH,
-    allowedGithubOrganizations: new Set(parsed.ALLOWED_GITHUB_ORGANIZATIONS),
+    allowedGithubAccounts: new Set(parsed.ALLOWED_GITHUB_ACCOUNTS),
   };
 }
 
-function parseAllowedOrganizations(value: string): readonly string[] {
-  const organizations = value
+function parseAllowedAccounts(value: string): readonly string[] {
+  const accounts = value
     .split(",")
-    .map((organization) => organization.trim().toLowerCase())
-    .filter((organization) => organization.length > 0);
+    .map((account) => account.trim().toLowerCase())
+    .filter((account) => account.length > 0);
 
-  if (organizations.length === 0) {
-    throw new Error("ALLOWED_GITHUB_ORGANIZATIONS must contain at least one organization.");
+  if (accounts.length === 0) {
+    throw new Error("ALLOWED_GITHUB_ACCOUNTS must contain at least one account.");
   }
 
-  return [...new Set(organizations)];
+  return [...new Set(accounts)];
 }

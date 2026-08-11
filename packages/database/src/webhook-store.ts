@@ -18,7 +18,7 @@ export interface WebhookDeliveryInput {
 
 export interface InstallationInput {
   readonly githubInstallationId: number;
-  readonly organizationLogin: string;
+  readonly accountLogin: string;
   readonly status: InstallationStatus;
 }
 
@@ -99,7 +99,7 @@ export class WebhookStore {
       .onConflictDoUpdate({
         target: installations.githubInstallationId,
         set: {
-          organizationLogin: input.organizationLogin,
+          accountLogin: input.accountLogin,
           status: input.status,
           updatedAt: now,
         },

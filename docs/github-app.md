@@ -3,7 +3,7 @@
 ## Registro
 
 Crie a App como pública, com a opção **Any account**, sem publicá-la no Marketplace. A allowlist do
-servidor controla quais organizações recebem processamento.
+servidor controla quais organizações e perfis pessoais recebem processamento.
 
 | Configuração | Valor |
 |--------------|-------|
@@ -20,14 +20,18 @@ Não conceda permissões de escrita, Checks ou Issues nesta fase.
 ```dotenv
 APP_ID=
 PRIVATE_KEY=
+PRIVATE_KEY_PATH=
 WEBHOOK_SECRET=
 DATABASE_PATH=/app/data/codekeat.db
 REVIEW_MODE=advisory
-ALLOWED_GITHUB_ORGANIZATIONS=takeat,organizacao-parceira
+ALLOWED_GITHUB_ACCOUNTS=takeat,organizacao-parceira,perfil-pessoal
 ```
 
-`ALLOWED_GITHUB_ORGANIZATIONS` é obrigatória. Os logins são normalizados para minúsculas e somente
-organizações presentes nessa lista criam Reviews.
+`ALLOWED_GITHUB_ACCOUNTS` é obrigatória. Os logins são normalizados para minúsculas e somente contas
+— organizações ou perfis pessoais — presentes nessa lista criam Reviews.
+
+Configure `PRIVATE_KEY` com o PEM ou Base64 do PEM, ou `PRIVATE_KEY_PATH` com o caminho para o arquivo
+PEM. Para desenvolvimento local, prefira `PRIVATE_KEY_PATH` e não versione o arquivo.
 
 ## Eventos tratados
 

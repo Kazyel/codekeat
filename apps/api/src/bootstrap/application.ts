@@ -19,7 +19,7 @@ export function configureApplication(
   registerWebhooks(app, {
     store: new WebhookStore(connection),
     queue: new LocalReviewRunQueue(app.log),
-    allowedOrganizations: environment.allowedGithubOrganizations,
+    allowedAccounts: environment.allowedGithubAccounts,
   });
 
   return connection;

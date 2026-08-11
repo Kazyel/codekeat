@@ -9,7 +9,7 @@ export type ReviewRunIgnoreReason = "repository_policy_disabled";
 export interface RequestReview {
   readonly deliveryId: string;
   readonly installationId: number;
-  readonly organizationLogin: string;
+  readonly accountLogin: string;
   readonly repositoryId: number;
   readonly repositoryOwner: string;
   readonly repositoryName: string;

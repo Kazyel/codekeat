@@ -2,6 +2,7 @@ import type { WebhookStore } from "@codekeat/database";
 import type { Probot } from "probot";
 import { type RequestReviewDependencies, requestReview } from "../review/request-review.js";
 import type { ReviewRunQueue } from "../review/review-run.js";
+import { isAllowedGithubAccount } from "./github-account.js";
 import {
   handleInstallationCreated,
   handleInstallationDeleted,
@@ -12,17 +13,12 @@ import {
 } from "./installation-handler.js";
 import { GitHubRepositoryPolicyResolver } from "./load-repository-policy.js";
 import { type DeliveryOutcome, processWebhookDelivery } from "./webhook-delivery.js";
-import {
-  isDraftPullRequest,
-  isOrganizationInstallation,
-  type PullRequestContext,
-  toRequestReview,
-} from "./webhook-events.js";
+import { isDraftPullRequest, type PullRequestContext, toRequestReview } from "./webhook-events.js";
 
 export interface WebhookDependencies {
   readonly store: WebhookStore;
   readonly queue: ReviewRunQueue;
-  readonly allowedOrganizations: ReadonlySet<string>;
+  readonly allowedAccounts: ReadonlySet<string>;
 }
 
 export function registerWebhooks(app: Probot, dependencies: WebhookDependencies): void {
@@ -45,7 +41,7 @@ export function registerWebhooks(app: Probot, dependencies: WebhookDependencies)
 function registerInstallationHandlers(app: Probot, dependencies: WebhookDependencies): void {
   const installationDependencies = {
     store: dependencies.store,
-    allowedOrganizations: dependencies.allowedOrganizations,
+    allowedAccounts: dependencies.allowedAccounts,
   };
 
   app.on("installation.created", (context) =>
@@ -122,12 +118,8 @@ function resolvePullRequestIgnoreReason(
     return "draft_pull_request";
   }
 
-  if (!isOrganizationInstallation(context)) {
-    return "organization_not_allowed";
-  }
-
-  if (!dependencies.allowedOrganizations.has(request.organizationLogin.toLowerCase())) {
-    return "organization_not_allowed";
+  if (!isAllowedGithubAccount(request.accountLogin, dependencies.allowedAccounts)) {
+    return "github_account_not_allowed";
   }
 
   const installation = dependencies.store.findInstallation(request.installationId);

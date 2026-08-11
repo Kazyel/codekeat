@@ -1,0 +1,1 @@
+ALTER TABLE `installations` RENAME COLUMN "organization_login" TO "account_login";

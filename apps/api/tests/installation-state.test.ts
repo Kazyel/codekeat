@@ -7,7 +7,7 @@ describe("installation state", () => {
     const database = createTestDatabase();
     database.store.upsertInstallation({
       githubInstallationId: 1,
-      organizationLogin: "takeat",
+      accountLogin: "takeat",
       status: "active",
     });
     database.store.upsertRepository({

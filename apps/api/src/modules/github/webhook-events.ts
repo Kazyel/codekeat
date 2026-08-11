@@ -10,10 +10,6 @@ export type PullRequestEventName =
 
 export type PullRequestContext = Context<PullRequestEventName>;
 
-export function isOrganizationInstallation(context: PullRequestContext): boolean {
-  return context.payload.repository.owner.type === "Organization";
-}
-
 export function isDraftPullRequest(context: PullRequestContext): boolean {
   return context.payload.pull_request.draft === true;
 }
@@ -30,7 +26,7 @@ export function toRequestReview(
   return {
     deliveryId: context.id,
     installationId: installation.id,
-    organizationLogin: repository.owner.login,
+    accountLogin: repository.owner.login,
     repositoryId: repository.id,
     repositoryOwner: repository.owner.login,
     repositoryName: repository.name,
