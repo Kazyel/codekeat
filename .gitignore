@@ -1,0 +1,40 @@
+# Dependencies and package-manager state
+node_modules/
+.pnpm-store/
+
+# Build and tool output
+.next/
+.turbo/
+.cache/
+coverage/
+dist/
+*.tsbuildinfo
+
+# Local SQLite data
+data/*
+!data/.gitkeep
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Environment and credentials
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.key
+*.pem
+
+# Logs
+*.log
+pnpm-debug.log*
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json

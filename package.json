@@ -1,0 +1,39 @@
+{
+  "name": "codekeat",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.33.2",
+  "engines": {
+    "node": ">=24.0.0",
+    "pnpm": ">=10.0.0"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "check": "biome check .",
+    "clean": "turbo run clean && rm -rf .turbo",
+    "dev": "turbo run dev",
+    "docker:build": "docker compose build",
+    "docker:config": "docker compose config",
+    "docker:down": "docker compose down",
+    "docker:up": "docker compose up --build --detach",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "lint": "biome lint .",
+    "test": "turbo run test",
+    "typecheck": "turbo run typecheck"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "catalog:",
+    "turbo": "catalog:",
+    "typescript": "catalog:"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@google/genai",
+      "better-sqlite3",
+      "esbuild",
+      "protobufjs"
+    ]
+  }
+}

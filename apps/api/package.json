@@ -1,0 +1,39 @@
+{
+  "name": "@codekeat/api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc --noEmit false --outDir dist",
+    "clean": "rm -rf dist .turbo .cache coverage",
+    "dev": "probot run ./src/index.ts",
+    "start": "node dist/index.js",
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@codekeat/database": "workspace:*",
+    "@google/genai": "catalog:",
+    "@octokit/rest": "catalog:",
+    "@opentelemetry/api": "catalog:",
+    "dotenv": "catalog:",
+    "minimatch": "catalog:",
+    "p-queue": "catalog:",
+    "parse-diff": "catalog:",
+    "pino": "catalog:",
+    "probot": "catalog:",
+    "yaml": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@codekeat/typescript-config": "workspace:*",
+    "@types/node": "catalog:",
+    "tsx": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}
