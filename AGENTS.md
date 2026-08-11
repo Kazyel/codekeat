@@ -26,6 +26,7 @@ Use pnpm 10 with Node.js 24; never use npm or yarn and never edit `pnpm-lock.yam
 | Full verification | `pnpm check && pnpm typecheck && pnpm test && pnpm build` |
 | Validate Compose | `pnpm docker:config` |
 | Generate migration | `pnpm --filter @codekeat/database db:generate` |
+| Open Drizzle Studio | `pnpm db:studio` |
 
 ## Change Flow
 1. Read the target package manifest, related types, tests, and one existing analogous implementation.

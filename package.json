@@ -12,6 +12,7 @@
     "build": "turbo run build",
     "check": "biome check .",
     "clean": "turbo run clean && rm -rf .turbo",
+    "db:studio": "pnpm --filter @codekeat/database db:studio",
     "dev": "turbo run dev",
     "docker:build": "docker compose build",
     "docker:config": "docker compose config",
@@ -27,13 +28,5 @@
     "@biomejs/biome": "catalog:",
     "turbo": "catalog:",
     "typescript": "catalog:"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "@google/genai",
-      "better-sqlite3",
-      "esbuild",
-      "protobufjs"
-    ]
   }
 }
