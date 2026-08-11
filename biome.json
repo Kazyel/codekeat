@@ -11,6 +11,7 @@
       "!!**/.next",
       "!!**/.turbo",
       "!!**/coverage",
+      "!!**/drizzle/meta",
       "!!**/dist",
       "!!**/node_modules",
       "!!**/pnpm-lock.yaml"
