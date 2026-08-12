@@ -37,7 +37,7 @@ FROM node:${NODE_VERSION}-bookworm-slim AS runner
 
 ENV NODE_ENV=production
 ENV HOSTNAME=0.0.0.0
-ENV PORT=3000
+ENV PORT=3501
 
 WORKDIR /app
 
@@ -47,7 +47,7 @@ COPY --from=builder --chown=node:node /app/apps/web/.next/static ./apps/web/.nex
 
 USER node
 
-EXPOSE 3000
+EXPOSE 3501
 
 WORKDIR /app/apps/web
 

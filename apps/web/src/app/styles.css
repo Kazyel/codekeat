@@ -1,0 +1,244 @@
+:root {
+  --ink: #132238;
+  --muted: #607089;
+  --paper: #f4f7fb;
+  --card: #ffffff;
+  --line: #d8e0eb;
+  --review: #0b7285;
+  --critical: #b42318;
+  --high: #d05b18;
+  --medium: #b78b00;
+  --low: #287843;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: Arial, Helvetica, sans-serif;
+  margin: 0;
+}
+
+a {
+  color: inherit;
+}
+button:focus-visible,
+a:focus-visible,
+input:focus-visible {
+  outline: 3px solid #f0ad00;
+  outline-offset: 2px;
+}
+
+.shell {
+  margin: 0 auto;
+  max-width: 980px;
+  padding: 48px 24px 80px;
+}
+.auth-shell {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 24px;
+}
+.login-card {
+  background: var(--card);
+  border-top: 5px solid var(--review);
+  box-shadow: 12px 12px 0 #d8e9ed;
+  max-width: 440px;
+  padding: 36px;
+  width: 100%;
+}
+.login-card h1 {
+  font-size: clamp(2rem, 7vw, 3rem);
+  letter-spacing: -0.06em;
+  line-height: 1;
+  margin: 0;
+}
+.login-copy {
+  color: var(--muted);
+  line-height: 1.5;
+  margin: 18px 0 28px;
+}
+.login-form {
+  display: grid;
+  gap: 10px;
+}
+.login-form label {
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+.login-form input {
+  border: 1px solid var(--line);
+  border-radius: 0;
+  color: var(--ink);
+  font: inherit;
+  margin-bottom: 8px;
+  padding: 11px 12px;
+}
+.login-form button {
+  background: var(--review);
+  border: 1px solid var(--review);
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  margin-top: 10px;
+  padding: 12px;
+}
+.login-form button:hover {
+  background: #075a68;
+}
+.form-error {
+  background: #fdecea;
+  border-left: 4px solid var(--critical);
+  color: #7a1e18;
+  margin: 0 0 20px;
+  padding: 10px 12px;
+}
+.masthead,
+.review-header {
+  border-bottom: 2px solid var(--ink);
+  display: flex;
+  gap: 24px;
+  justify-content: space-between;
+  padding-bottom: 24px;
+}
+.masthead h1,
+.review-header h1 {
+  font-size: clamp(2rem, 5vw, 3.5rem);
+  letter-spacing: -0.06em;
+  line-height: 1;
+  margin: 0;
+}
+.eyebrow,
+.severity {
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  margin: 0 0 10px;
+  text-transform: uppercase;
+}
+.quiet-button {
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 0;
+  color: var(--ink);
+  cursor: pointer;
+  padding: 10px 12px;
+}
+.run-list {
+  margin-top: 30px;
+}
+.run-card {
+  align-items: center;
+  background: var(--card);
+  border-bottom: 1px solid var(--line);
+  display: grid;
+  gap: 16px;
+  grid-template-columns: 12px 1fr auto;
+  padding: 18px 14px;
+  text-decoration: none;
+}
+.run-card:hover {
+  background: #eaf3f4;
+}
+.status-dot {
+  background: var(--muted);
+  height: 10px;
+  width: 10px;
+}
+.status-completed {
+  background: var(--low);
+}
+.status-running {
+  background: var(--review);
+}
+.status-failed {
+  background: var(--critical);
+}
+.status-ignored {
+  background: var(--medium);
+}
+.run-main,
+.run-meta {
+  display: flex;
+  gap: 8px;
+}
+.run-main {
+  flex-direction: column;
+}
+.run-meta {
+  align-items: center;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.back-link {
+  display: inline-block;
+  margin-bottom: 32px;
+}
+.review-facts {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 20px;
+}
+.finding-list {
+  display: grid;
+  gap: 16px;
+  margin-top: 30px;
+}
+.finding {
+  background: var(--card);
+  border-left: 5px solid var(--review);
+  padding: 20px;
+}
+.finding h2 {
+  font-size: 1.15rem;
+  margin: 0 0 10px;
+}
+.finding p:last-child {
+  color: var(--muted);
+  line-height: 1.5;
+  margin-bottom: 0;
+}
+.finding-critical {
+  border-left-color: var(--critical);
+}
+.finding-high {
+  border-left-color: var(--high);
+}
+.finding-medium {
+  border-left-color: var(--medium);
+}
+.finding-low {
+  border-left-color: var(--low);
+}
+.empty-state {
+  background: var(--card);
+  border: 1px dashed var(--line);
+  margin-top: 30px;
+  padding: 26px;
+}
+.empty-state h2 {
+  margin-top: 0;
+}
+
+@media (max-width: 640px) {
+  .masthead {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .run-card {
+    grid-template-columns: 12px 1fr;
+  }
+  .run-meta {
+    grid-column: 2;
+    flex-wrap: wrap;
+  }
+}

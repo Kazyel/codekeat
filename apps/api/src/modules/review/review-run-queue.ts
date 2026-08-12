@@ -1,16 +1,35 @@
 import PQueue from "p-queue";
 import type { Logger } from "pino";
 
-import type { ReviewRunQueue } from "./review-run.js";
+import type {
+  ReviewReportPublisherTask,
+  ReviewRunProcessorTask,
+  ReviewWorkQueue,
+} from "./review-run.js";
 
-export class LocalReviewRunQueue implements ReviewRunQueue {
+export class LocalReviewWorkQueue implements ReviewWorkQueue {
   private readonly queue = new PQueue({ concurrency: 1 });
 
-  constructor(private readonly logger: Logger) {}
+  constructor(
+    private readonly processor: ReviewRunProcessorTask,
+    private readonly publisher: ReviewReportPublisherTask,
+    private readonly logger: Logger,
+  ) {}
 
-  async enqueue(reviewRunId: string): Promise<void> {
-    await this.queue.add(async () => {
-      this.logger.info({ reviewRunId }, "review_run.queued");
-    });
+  async enqueueReview(reviewRunId: string): Promise<void> {
+    void this.queue
+      .add(() => this.processor.process(reviewRunId))
+      .catch(() => {
+        this.logger.error({ reviewRunId }, "review_run.processing_failed");
+      });
+    this.logger.info({ reviewRunId }, "review_run.queued");
+  }
+
+  async enqueueReport(reviewReportId: string): Promise<void> {
+    void this.queue
+      .add(() => this.publisher.publish(reviewReportId))
+      .catch(() => {
+        this.logger.error({ reviewReportId }, "review_report.processing_failed");
+      });
   }
 }

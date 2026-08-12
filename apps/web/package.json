@@ -6,20 +6,25 @@
   "scripts": {
     "build": "next build",
     "clean": "rm -rf .next .turbo .cache",
-    "dev": "next dev",
+    "dev": "next dev --port 3501",
+    "env:check": "tsx --env-file=.env ./src/app/lib/check-environment.ts",
     "start": "next start",
+    "test": "vitest run --passWithNoTests",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "next": "catalog:",
     "react": "catalog:",
-    "react-dom": "catalog:"
+    "react-dom": "catalog:",
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@codekeat/typescript-config": "workspace:*",
     "@types/node": "catalog:",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "tsx": "catalog:",
+    "vitest": "catalog:"
   }
 }

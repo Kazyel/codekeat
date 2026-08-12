@@ -20,11 +20,13 @@ Use pnpm 10 with Node.js 24; never use npm or yarn and never edit `pnpm-lock.yam
 |------|---------|
 | Install | `pnpm install --frozen-lockfile` |
 | Develop all workspaces | `pnpm dev` |
+| Develop API only | `pnpm dev:api` |
 | Check one file | `pnpm exec biome check path/to/file.ts` |
 | Test one API file | `pnpm --filter @codekeat/api exec vitest run path/to/file.test.ts` |
 | Typecheck one workspace | `pnpm --filter <workspace-name> typecheck` |
 | Full verification | `pnpm check && pnpm typecheck && pnpm test && pnpm build` |
 | Validate Compose | `pnpm docker:config` |
+| Validate environments | `pnpm env:check` |
 | Generate migration | `pnpm --filter @codekeat/database db:generate` |
 | Open Drizzle Studio | `pnpm db:studio` |
 

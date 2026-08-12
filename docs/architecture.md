@@ -9,18 +9,12 @@ consultivo. Não há serviços distribuídos, broker de filas ou quality gate bl
 ## Visão geral
 
 ```text
-GitHub webhook
-      |
-      v
-GitHub adapter -> Review module -> AI model port -> Gemini adapter
-      |                  |                |
-      |                  v                v
-      |            SQLite (runs,       Typed result
-      |             findings, policy)       |
-      `-------------------------------------v
-                              GitHub publisher -> comentário consultivo no PR
+GitHub webhook -> GitHub adapter -> Review module -> fila local -> AI model port -> Gemini adapter
+                                         |                               |
+                                         v                               v
+                              SQLite (runs, findings, policy)      Findings tipados
 
-Web application -------------------------> API de leitura de Reviews
+Web application -------------------------> API interna de leitura e autenticação
 ```
 
 ## Limites
@@ -29,10 +23,10 @@ Web application -------------------------> API de leitura de Reviews
 |------|------------------|-------------------|
 | `review` | Orquestrar um Review Run e produzir Findings | Probot, Octokit, Gemini, Drizzle |
 | `repository-policy` | Resolver e validar a Repository Policy | Detalhes do modelo de IA |
-| `github` | Receber eventos, obter contexto e publicar feedback | Regras de negócio de Review |
+| `github` | Receber eventos e obter o diff e contexto do PR | Regras de negócio de Review |
 | `ai` | Adaptar um provedor de modelo ao contrato de análise | HTTP/GitHub/SQLite |
 | `database` | Persistir o estado do Codekeat | Lógica de orquestração |
-| `web` | Exibir histórico e detalhes de Reviews | Webhooks e SDKs de IA |
+| `web` | Autenticar pessoas e exibir histórico e detalhes de Reviews | Webhooks, SDKs de IA e SQLite |
 
 O diretório inicial da API deve refletir esses limites em módulos verticais. Código de domínio e
 orquestração fica nos módulos; Probot, Octokit, Gemini e Drizzle ficam nos adaptadores nas bordas.
@@ -42,15 +36,24 @@ Não criar camadas genéricas, repositórios abstratos ou módulos compartilhado
 
 1. Um evento elegível de pull request chega pelo adaptador GitHub.
 2. O adaptador deduplica pela entrega e pelo SHA do commit antes de iniciar outro Review Run.
-3. A API lê a Repository Policy da branch padrão; a coleta de diff e contexto entra com o analisador.
-4. O módulo `review` persiste o Review Run e o agenda na fila local somente para limitar concorrência.
-5. O provedor de IA recebe uma entrada tipada e devolve Findings tipados.
-6. A API persiste o resultado e publica um comentário consolidado no pull request.
-7. Falhas ficam registradas no Review Run e podem ser reexecutadas sem duplicar o comentário.
+3. A API lê a Repository Policy da branch padrão e persiste o Review Run como `queued`.
+4. A fila local agenda o processamento com concorrência global de um, sem atrasar a resposta HTTP.
+5. O processador reivindica somente runs `queued`, muda-os para `running` e obtém o PR atual como a Installation.
+6. Se o SHA mudou, o run fica `ignored` com `superseded_head_sha`; caso contrário, o diff completo é
+   dividido em Review Chunks de até 100.000 caracteres.
+7. O provedor de IA recebe os chunks sequencialmente e devolve Findings tipados, localizados em linhas
+   adicionadas do respectivo chunk.
+8. A API valida, deduplica e persiste todos os Findings e um Review Report pendente com a transição
+   atômica para `completed`.
+9. A fila atualiza um comentário consultivo único do Codekeat no PR; sem Findings, publica a confirmação
+   de que não encontrou problemas concretos.
+10. Falhas controladas deixam o run como `failed`, sem persistência parcial de Findings, e falhas de
+    publicação ficam no Review Report para nova tentativa em evento futuro.
 
 O handler do webhook não executa análise longa no caminho da resposta HTTP. `p-queue` controla a
 concorrência local; ele não é um broker durável. Enquanto SQLite for usado, uma única réplica da API
-processa Reviews. A recuperação de runs pendentes após reinício deve usar o estado persistido.
+processa Reviews. Nesta fase, o bootstrap não recupera nem reenfileira runs `queued` que já existiam
+antes de um reinício.
 
 ## Extensibilidade necessária agora
 
@@ -76,20 +79,33 @@ SQLite guarda somente o estado pertencente ao Codekeat: instalação, repositór
 Finding e snapshot da Repository Policy usada na execução. GitHub continua sendo a fonte de verdade para
 pull requests, commits e usuários.
 
-Um Review Run deve registrar o repositório, número do PR, SHA analisado, status, timestamps, modelo,
-policy aplicada, referência ao comentário publicado e erro estruturado quando houver falha.
+Um Review Run registra o repositório, número do PR, SHA analisado, status, timestamps, modelo, policy
+aplicada e erro estruturado quando houver falha. Finding registra a severidade, caminho, linha adicionada,
+título e justificativa; diffs, prompts e respostas brutas não são persistidos. Review Report mantém o
+comentário consultivo mais recente de cada PR.
 
 Um Webhook Delivery registra cada evento recebido e impede que a mesma entrega seja processada duas
 vezes. A chave única de repositório, PR e SHA impede Reviews duplicados quando eventos distintos se
-referem ao mesmo commit.
+referem ao mesmo commit. Review Report é único por repositório e PR, preservando um comentário atualizado
+em vez de criar ruído a cada commit.
+
+Dashboard User e Dashboard Session pertencem à API. O painel envia as credenciais somente ao endpoint
+interno autenticado pela comunicação entre containers; a API valida a senha com Argon2id e persiste apenas
+seu hash. A sessão exposta ao navegador é um token opaco, armazenado em cookie `httpOnly`, e a API armazena
+somente o hash desse token. Logout revoga a sessão persistida. O usuário administrador inicial é provisionado
+uma única vez pelo bootstrap via ambiente; mudanças posteriores no ambiente não alteram sua senha.
+O BFF limita cada e-mail a cinco tentativas de login malsucedidas por quinze minutos na réplica local do
+painel, sem informar se o e-mail ou a senha foi o dado incorreto.
 
 ## Restrições de produto
 
 - O produto opera em Advisory Mode: não cria conclusões de falha, não solicita alterações e não bloqueia merge.
-- O primeiro formato de publicação é um comentário consolidado por Review Run, para evitar ruído no PR.
-- Nesta primeira fatia, o Review Run permanece `queued`; o processador de IA ainda não é executado.
+- Nesta fase, publica apenas um comentário consultivo atualizado por PR; não publica Check, status ou
+  qualquer sinalização bloqueante.
+- `queued` significa que o run foi aceito e agendado, `running` que foi reivindicado pela fila e os estados
+  finais são `completed`, `failed` e `ignored`.
 - Todo dado externo é validado na borda antes de entrar na aplicação.
-- Credenciais e conteúdo sensível do diff não podem aparecer em logs ou mensagens de erro.
+- Credenciais, conteúdo do PR, diff, prompt e resposta do modelo não podem aparecer em logs ou mensagens de erro.
 
 ## Evolução orientada por sinais
 
@@ -98,5 +114,5 @@ referem ao mesmo commit.
 | Reinícios ou volume tornam runs locais não confiáveis | Migrar para Postgres e uma fila durável |
 | Necessidade de mais de uma réplica | Migrar do SQLite antes de escalar a API |
 | A política precisa de gestão sem commits | Adicionar interface web e API de administração |
-| Feedback consolidado deixa de ser suficiente | Avaliar comentários inline, mantendo Advisory Mode |
+| Relatórios precisam de filtros ou ações administrativas | Ampliar o painel sem expor SQLite ao frontend |
 | Equipe decidir bloquear PRs | Criar ADR específica para checks, critérios e rollout |

@@ -1,7 +1,7 @@
 import type { WebhookStore } from "@codekeat/database";
 import type { Probot } from "probot";
 import { type RequestReviewDependencies, requestReview } from "../review/request-review.js";
-import type { ReviewRunQueue } from "../review/review-run.js";
+import type { ReviewWorkQueue } from "../review/review-run.js";
 import { isAllowedGithubAccount } from "./github-account.js";
 import {
   handleInstallationCreated,
@@ -17,7 +17,7 @@ import { isDraftPullRequest, type PullRequestContext, toRequestReview } from "./
 
 export interface WebhookDependencies {
   readonly store: WebhookStore;
-  readonly queue: ReviewRunQueue;
+  readonly queue: ReviewWorkQueue;
   readonly allowedAccounts: ReadonlySet<string>;
 }
 

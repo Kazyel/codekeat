@@ -30,7 +30,7 @@ GitHub Actions:
 - `AWS_ROLE_ARN`: role assumida via GitHub OIDC, com permissão de push nos dois repositórios.
 - `ECR_API_REPOSITORY`
 - `ECR_WEB_REPOSITORY`
-- `NEXT_PUBLIC_API_URL`: URL pública da API incorporada ao build do frontend.
+- `NEXT_PUBLIC_APP_NAME`: nome exibido pelo frontend, se necessário.
 
 Execute manualmente o workflow `Publish Docker images`. Cada imagem recebe as tags `latest` e
 `sha-<commit>`.
@@ -50,7 +50,8 @@ No host, mantenha em `/opt/codekeat`:
 
 - `compose.yaml`
 - `.env`, criado a partir de `.env.example`
-- `apps/api/.env`, contendo os secrets do GitHub App e Gemini
+- `apps/api/.env`, contendo os secrets do GitHub App, Gemini e token interno do painel
+- `apps/web/.env`, contendo o token interno de comunicação com a API
 
 Configure pelo menos:
 
@@ -60,6 +61,11 @@ WEB_IMAGE=ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/codekeat-web:sha-COMMIT
 CODEKEAT_DATA_DIR=/mnt/codekeat
 BIND_ADDRESS=127.0.0.1
 ```
+
+Em `apps/api/.env`, configure `DASHBOARD_API_TOKEN`, `INITIAL_ADMIN_EMAIL` e
+`INITIAL_ADMIN_PASSWORD`. Repita exatamente o valor de `DASHBOARD_API_TOKEN` em `apps/web/.env`.
+O painel usa a rede interna do Compose para chamar a API; nenhum desses segredos é incorporado no
+bundle web. Não configure credenciais OAuth do GitHub para o painel.
 
 O bind em loopback pressupõe um reverse proxy ou agente de túnel no host. Para conectar diretamente
 um Application Load Balancer às portas da instância, use `BIND_ADDRESS=0.0.0.0` e restrinja o

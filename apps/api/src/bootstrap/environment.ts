@@ -15,6 +15,11 @@ const environmentSchema = z
     WEBHOOK_SECRET: z.string().trim().min(1),
     DATABASE_PATH: z.string().trim().min(1),
     ALLOWED_GITHUB_ACCOUNTS: z.string().transform(parseAllowedAccounts),
+    GOOGLE_API_KEY: z.string().trim().min(1),
+    GEMINI_MODEL: z.string().trim().min(1),
+    DASHBOARD_API_TOKEN: z.string().trim().min(1),
+    INITIAL_ADMIN_EMAIL: z.string().trim().toLowerCase().email(),
+    INITIAL_ADMIN_PASSWORD: z.string().min(8).max(256),
     REVIEW_MODE: z.literal("advisory"),
   })
   .refine((values) => values.PRIVATE_KEY !== undefined || values.PRIVATE_KEY_PATH !== undefined, {
@@ -25,6 +30,11 @@ const environmentSchema = z
 export interface ApplicationEnvironment {
   readonly databasePath: string;
   readonly allowedGithubAccounts: ReadonlySet<string>;
+  readonly googleApiKey: string;
+  readonly geminiModel: string;
+  readonly dashboardApiToken: string;
+  readonly initialAdminEmail: string;
+  readonly initialAdminPassword: string;
 }
 
 export function loadEnvironment(values: NodeJS.ProcessEnv): ApplicationEnvironment {
@@ -33,6 +43,11 @@ export function loadEnvironment(values: NodeJS.ProcessEnv): ApplicationEnvironme
   return {
     databasePath: parsed.DATABASE_PATH,
     allowedGithubAccounts: new Set(parsed.ALLOWED_GITHUB_ACCOUNTS),
+    googleApiKey: parsed.GOOGLE_API_KEY,
+    geminiModel: parsed.GEMINI_MODEL,
+    dashboardApiToken: parsed.DASHBOARD_API_TOKEN,
+    initialAdminEmail: parsed.INITIAL_ADMIN_EMAIL,
+    initialAdminPassword: parsed.INITIAL_ADMIN_PASSWORD,
   };
 }
 

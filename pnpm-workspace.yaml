@@ -4,6 +4,7 @@ packages:
 
 onlyBuiltDependencies:
   - "@google/genai"
+  - argon2
   - better-sqlite3
   - esbuild
   - protobufjs
@@ -13,6 +14,7 @@ catalog:
   "@google/genai": 2.16.0
   "@octokit/rest": 22.0.1
   "@opentelemetry/api": 1.9.1
+  argon2: 0.44.0
   "@types/better-sqlite3": 9.6.0
   "@types/node": 26.2.0
   "@types/react": 19.2.18

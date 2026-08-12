@@ -10,7 +10,8 @@
     "build": "tsc --noEmit false --outDir dist",
     "clean": "rm -rf dist .turbo .cache coverage",
     "dev": "tsx ./node_modules/probot/bin/probot.js run ./src/index.ts",
-    "start": "node dist/index.js",
+    "env:check": "tsx --env-file=.env ./src/bootstrap/check-environment.ts",
+    "start": "probot run ./dist/index.js",
     "test": "vitest run --passWithNoTests",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
@@ -20,6 +21,7 @@
     "@google/genai": "catalog:",
     "@octokit/rest": "catalog:",
     "@opentelemetry/api": "catalog:",
+    "argon2": "catalog:",
     "dotenv": "catalog:",
     "minimatch": "catalog:",
     "p-queue": "catalog:",
@@ -32,9 +34,9 @@
   "devDependencies": {
     "@codekeat/typescript-config": "workspace:*",
     "@types/node": "catalog:",
+    "smee-client": "catalog:",
     "tsx": "catalog:",
     "typescript": "catalog:",
-    "smee-client": "catalog:",
     "vitest": "catalog:"
   }
 }

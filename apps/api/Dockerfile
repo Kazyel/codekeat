@@ -44,4 +44,4 @@ USER node
 
 EXPOSE 3001
 
-CMD ["node", "dist/index.js"]
+CMD ["node", "node_modules/probot/bin/probot.js", "run", "./dist/index.js"]

@@ -1,4 +1,4 @@
-import { reviewRuns } from "@codekeat/database";
+import { reviewReports, reviewRuns } from "@codekeat/database";
 import { describe, expect, it } from "vitest";
 
 import type { ResolvedRepositoryPolicy } from "../src/modules/repository-policy/repository-policy.js";
@@ -6,7 +6,7 @@ import {
   type RepositoryPolicyResolver,
   requestReview,
 } from "../src/modules/review/request-review.js";
-import type { RequestReview, ReviewRunQueue } from "../src/modules/review/review-run.js";
+import type { RequestReview, ReviewWorkQueue } from "../src/modules/review/review-run.js";
 import { createTestDatabase } from "./test-database.js";
 
 const reviewRequest: RequestReview = {
@@ -120,13 +120,76 @@ describe("requestReview", () => {
     expect(runs[0]?.policyWarningCode).toBe("invalid_repository_policy");
     database.close();
   });
+
+  it("reopens a failed run when the repository remains eligible", async () => {
+    const database = createTestDatabase();
+    prepareActiveRepository(database);
+    const queue = new RecordedQueue();
+    database.store.createReviewRun({
+      id: "failed-run",
+      githubRepositoryId: reviewRequest.repositoryId,
+      pullRequestNumber: reviewRequest.pullRequestNumber,
+      headSha: reviewRequest.headSha,
+      trigger: "opened",
+      status: "failed",
+      policyJson: '{"enabled":true,"version":1}',
+      policySource: "default",
+      policyWarningCode: null,
+      ignoreReason: null,
+    });
+
+    const result = await requestReview(
+      { ...reviewRequest, trigger: "reopened" },
+      { store: database.store, queue, policyResolver: new FixedPolicyResolver(enabledPolicy) },
+    );
+
+    expect(result.kind).toBe("queued");
+    expect(queue.reviewRunIds).toEqual(["failed-run"]);
+    expect(database.connection.db.select().from(reviewRuns).get()?.status).toBe("queued");
+    database.close();
+  });
+
+  it("reopens a completed run by scheduling its missing report without Gemini work", async () => {
+    const database = createTestDatabase();
+    prepareActiveRepository(database);
+    const queue = new RecordedQueue();
+    database.store.createReviewRun({
+      id: "completed-run",
+      githubRepositoryId: reviewRequest.repositoryId,
+      pullRequestNumber: reviewRequest.pullRequestNumber,
+      headSha: reviewRequest.headSha,
+      trigger: "opened",
+      status: "queued",
+      policyJson: '{"enabled":true,"version":1}',
+      policySource: "default",
+      policyWarningCode: null,
+      ignoreReason: null,
+    });
+    database.store.completeReviewRun("completed-run", "test-model", [], "report-1");
+
+    const result = await requestReview(
+      { ...reviewRequest, trigger: "reopened" },
+      { store: database.store, queue, policyResolver: new FixedPolicyResolver(enabledPolicy) },
+    );
+
+    expect(result.kind).toBe("report_queued");
+    expect(queue.reviewRunIds).toEqual([]);
+    expect(queue.reviewReportIds).toEqual(["report-1"]);
+    expect(database.connection.db.select().from(reviewReports).get()?.status).toBe("pending");
+    database.close();
+  });
 });
 
-class RecordedQueue implements ReviewRunQueue {
+class RecordedQueue implements ReviewWorkQueue {
   readonly reviewRunIds: string[] = [];
+  readonly reviewReportIds: string[] = [];
 
-  async enqueue(reviewRunId: string): Promise<void> {
+  async enqueueReview(reviewRunId: string): Promise<void> {
     this.reviewRunIds.push(reviewRunId);
+  }
+
+  async enqueueReport(reviewReportId: string): Promise<void> {
+    this.reviewReportIds.push(reviewReportId);
   }
 }
 

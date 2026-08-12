@@ -22,7 +22,10 @@ export const reviewRuns = sqliteTable(
     policyWarningCode: text("policy_warning_code"),
     ignoreReason: text("ignore_reason"),
     errorCode: text("error_code"),
+    modelName: text("model_name"),
     createdAt: text("created_at").notNull(),
+    startedAt: text("started_at"),
+    completedAt: text("completed_at"),
     updatedAt: text("updated_at").notNull(),
   },
   (table) => [
