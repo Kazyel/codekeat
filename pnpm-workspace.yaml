@@ -5,7 +5,6 @@ packages:
 onlyBuiltDependencies:
   - "@google/genai"
   - argon2
-  - better-sqlite3
   - esbuild
   - protobufjs
 
