@@ -14,12 +14,12 @@ catalog:
   "@google/genai": 2.16.0
   "@octokit/rest": 22.0.1
   "@opentelemetry/api": 1.9.1
-  argon2: 0.44.0
+  argon2: 0.45.1
   "@types/better-sqlite3": 9.6.0
   "@types/node": 26.2.0
   "@types/react": 19.2.18
   "@types/react-dom": 19.2.4
-  better-sqlite3: 12.4.1
+  better-sqlite3: 13.0.3
   dotenv: 17.4.2
   drizzle-kit: 0.31.10
   drizzle-orm: 0.45.2
