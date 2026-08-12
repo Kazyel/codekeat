@@ -20,7 +20,7 @@
       "inputs": ["$TURBO_DEFAULT$", ".env.test*"]
     },
     "typecheck": {
-      "dependsOn": ["^typecheck"],
+      "dependsOn": ["^build"],
       "outputs": [".cache/tsbuildinfo/**"]
     }
   }
