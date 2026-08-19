@@ -10,7 +10,7 @@ onlyBuiltDependencies:
 
 catalog:
   "@biomejs/biome": 2.5.8
-  "@google/genai": 2.16.0
+  "@google/genai": 2.17.1
   "@octokit/rest": 22.0.1
   "@opentelemetry/api": 1.9.1
   argon2: 0.45.1
@@ -23,7 +23,7 @@ catalog:
   drizzle-kit: 0.31.10
   drizzle-orm: 0.45.2
   minimatch: 10.2.6
-  next: 16.3.0
+  next: 16.3.1
   p-queue: 9.3.3
   parse-diff: 0.12.0
   pino: 10.3.1
@@ -32,7 +32,7 @@ catalog:
   react-dom: 19.2.8
   smee-client: 5.0.0
   tsx: 4.23.12
-  turbo: 2.10.9
+  turbo: 2.10.10
   typescript: 7.0.2
   vitest: 4.1.10
   yaml: 2.9.0
