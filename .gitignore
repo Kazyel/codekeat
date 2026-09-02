@@ -11,8 +11,8 @@ dist/
 *.tsbuildinfo
 
 # Local SQLite data
-data/*
-!data/.gitkeep
+packages/database/data/*
+!packages/database/data/.gitkeep
 *.db
 *.db-shm
 *.db-wal
