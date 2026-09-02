@@ -1,7 +1,7 @@
 import type { WebhookStore } from "@codekeat/database";
 import type { Probot } from "probot";
 import { type RequestReviewDependencies, requestReview } from "../review/request-review.js";
-import type { ReviewWorkQueue } from "../review/review-run.js";
+import type { RequestReview, ReviewWorkQueue } from "../review/review-run.js";
 import { isAllowedGithubAccount } from "./github-account.js";
 import {
   handleInstallationCreated,
@@ -84,19 +84,14 @@ async function handlePullRequest(
         return ignored("installation_not_active");
       }
 
-      const ignoreReason = resolvePullRequestIgnoreReason(context, request, dependencies);
+      const ignoreReason = preparePullRequestRepository(
+        request,
+        isDraftPullRequest(context),
+        dependencies,
+      );
       if (ignoreReason !== null) {
         return ignored(ignoreReason);
       }
-
-      dependencies.store.upsertRepository({
-        githubRepositoryId: request.repositoryId,
-        installationId: request.installationId,
-        ownerLogin: request.repositoryOwner,
-        name: request.repositoryName,
-        defaultBranch: request.repositoryDefaultBranch,
-        status: "active",
-      });
 
       const result = await requestReview(
         request,
@@ -109,12 +104,17 @@ async function handlePullRequest(
   );
 }
 
-function resolvePullRequestIgnoreReason(
-  context: PullRequestContext,
-  request: Exclude<ReturnType<typeof toRequestReview>, null>,
-  dependencies: WebhookDependencies,
+interface PullRequestRepositoryDependencies {
+  readonly store: WebhookStore;
+  readonly allowedAccounts: ReadonlySet<string>;
+}
+
+export function preparePullRequestRepository(
+  request: RequestReview,
+  isDraft: boolean,
+  dependencies: PullRequestRepositoryDependencies,
 ): string | null {
-  if (isDraftPullRequest(context)) {
+  if (isDraft) {
     return "draft_pull_request";
   }
 
@@ -127,14 +127,14 @@ function resolvePullRequestIgnoreReason(
     return "installation_not_active";
   }
 
-  const repository = dependencies.store.findRepository(
-    request.repositoryId,
-    request.installationId,
-  );
-  if (repository?.status !== "active") {
-    return "repository_not_active";
-  }
-
+  dependencies.store.upsertRepository({
+    githubRepositoryId: request.repositoryId,
+    installationId: request.installationId,
+    ownerLogin: request.repositoryOwner,
+    name: request.repositoryName,
+    defaultBranch: request.repositoryDefaultBranch,
+    status: "active",
+  });
   return null;
 }
 

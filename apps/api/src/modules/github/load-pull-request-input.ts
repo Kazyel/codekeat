@@ -21,6 +21,7 @@ export class GitHubReviewInputSource implements ReviewInputSource {
   async load(run: RunnableReviewRun): Promise<ReviewInputLoadResult> {
     try {
       const octokit = await this.app.auth(run.githubInstallationId);
+
       const pullRequest = await octokit.rest.pulls.get({
         owner: run.repositoryOwner,
         repo: run.repositoryName,
@@ -79,7 +80,6 @@ function createFileSections(file: File): readonly DiffSection[] {
   if (path === null) {
     return [];
   }
-
   return file.chunks.flatMap((chunk) => splitChunk(path, chunk));
 }
 

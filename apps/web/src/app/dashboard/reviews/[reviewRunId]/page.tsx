@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import type { ReactNode } from "react";
+import { BrandLockup } from "../../../brand-lockup";
 
 import { loadReviewRun } from "../../../lib/api-client";
 import { readSession } from "../../../lib/session";
@@ -29,17 +30,22 @@ export default async function ReviewDetailPage({
         ← Todas as análises
       </Link>
       <header className="review-header">
-        <p className="eyebrow">{reviewRun.repositoryFullName}</p>
-        <h1>PR #{reviewRun.pullRequestNumber}</h1>
-        <div className="review-facts">
-          <code>{reviewRun.headSha.slice(0, 7)}</code>
-          <span>{reviewRun.status}</span>
-          <span>{reviewRun.findingCount} findings</span>
-          {reviewRun.githubCommentUrl === null ? null : (
-            <a href={reviewRun.githubCommentUrl} rel="noreferrer" target="_blank">
-              Ver comentário no GitHub
-            </a>
-          )}
+        <div className="page-title">
+          <BrandLockup />
+          <div>
+            <p className="eyebrow">{reviewRun.repositoryFullName}</p>
+            <h1>PR #{reviewRun.pullRequestNumber}</h1>
+            <div className="review-facts">
+              <code>{reviewRun.headSha.slice(0, 7)}</code>
+              <span>{reviewRun.status}</span>
+              <span>{reviewRun.findingCount} findings</span>
+              {reviewRun.githubCommentUrl === null ? null : (
+                <a href={reviewRun.githubCommentUrl} rel="noreferrer" target="_blank">
+                  Ver comentário no GitHub
+                </a>
+              )}
+            </div>
+          </div>
         </div>
       </header>
 

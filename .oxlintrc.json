@@ -1,0 +1,14 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "unicorn", "oxc", "import", "react", "jsx-a11y", "nextjs", "vitest"],
+  "categories": {
+    "correctness": "error"
+  },
+  "ignorePatterns": ["**/drizzle/meta/**"],
+  "rules": {
+    "vitest/require-mock-type-parameters": "off"
+  },
+  "env": {
+    "builtin": true
+  }
+}

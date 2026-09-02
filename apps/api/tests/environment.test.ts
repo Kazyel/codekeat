@@ -10,6 +10,10 @@ const validEnvironment = {
   ALLOWED_GITHUB_ACCOUNTS: "Takeat, mateusmascarelo ",
   GOOGLE_API_KEY: "google-api-key",
   GEMINI_MODEL: "gemini-3.6-flash",
+  TAKEAT_MCP_URL: "https://mcp.takeat.example/mcp",
+  TAKEAT_MCP_TOKEN_URL: "https://mcp.takeat.example/oauth/token",
+  TAKEAT_MCP_CLIENT_ID: "codekeat",
+  TAKEAT_MCP_CLIENT_SECRET: "takeat-mcp-client-secret",
   DASHBOARD_API_TOKEN: "dashboard-api-token",
   INITIAL_ADMIN_EMAIL: "admin@codekeat.local",
   INITIAL_ADMIN_PASSWORD: "correct-password",
@@ -51,6 +55,21 @@ describe("loadEnvironment", () => {
     );
     expect(() => loadEnvironment({ ...validEnvironment, GEMINI_MODEL: "" })).toThrow(
       "GEMINI_MODEL",
+    );
+  });
+
+  it("requires HTTPS Takeat MCP endpoints and client credentials", () => {
+    expect(() =>
+      loadEnvironment({ ...validEnvironment, TAKEAT_MCP_URL: "http://mcp.example/mcp" }),
+    ).toThrow("TAKEAT_MCP_URL");
+    expect(() =>
+      loadEnvironment({ ...validEnvironment, TAKEAT_MCP_TOKEN_URL: "not-a-url" }),
+    ).toThrow("TAKEAT_MCP_TOKEN_URL");
+    expect(() => loadEnvironment({ ...validEnvironment, TAKEAT_MCP_CLIENT_ID: "" })).toThrow(
+      "TAKEAT_MCP_CLIENT_ID",
+    );
+    expect(() => loadEnvironment({ ...validEnvironment, TAKEAT_MCP_CLIENT_SECRET: "" })).toThrow(
+      "TAKEAT_MCP_CLIENT_SECRET",
     );
   });
 

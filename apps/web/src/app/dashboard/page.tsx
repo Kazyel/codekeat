@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import type { ReactNode } from "react";
+import { BrandLockup } from "../brand-lockup";
 
 import { loadReviewRuns } from "../lib/api-client";
 import { readSession } from "../lib/session";
@@ -15,9 +16,12 @@ export default async function DashboardPage(): Promise<ReactNode> {
   return (
     <main className="shell">
       <header className="masthead">
-        <div>
-          <p className="eyebrow">Codekeat / ledger de revisão</p>
-          <h1>Pull requests analisados</h1>
+        <div className="page-title">
+          <BrandLockup />
+          <div>
+            <p className="eyebrow">Ledger de revisão</p>
+            <h1>Pull requests analisados</h1>
+          </div>
         </div>
         <form action="/logout" method="post">
           <button className="quiet-button" type="submit">

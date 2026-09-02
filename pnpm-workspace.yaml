@@ -9,8 +9,10 @@ onlyBuiltDependencies:
   - protobufjs
 
 catalog:
-  "@biomejs/biome": 2.5.8
+  "oxfmt": 0.66.0
+  "oxlint": 1.81.0
   "@google/genai": 2.16.0
+  "@modelcontextprotocol/sdk": 1.26.0
   "@octokit/rest": 22.0.1
   "@opentelemetry/api": 1.9.1
   argon2: 0.45.1
@@ -20,6 +22,7 @@ catalog:
   "@types/react-dom": 19.2.4
   better-sqlite3: 13.0.3
   dotenv: 17.4.2
+  hono: 4.13.5
   drizzle-kit: 0.31.10
   drizzle-orm: 0.45.2
   minimatch: 10.2.6
