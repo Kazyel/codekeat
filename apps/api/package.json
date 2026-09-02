@@ -2,10 +2,10 @@
   "name": "@codekeat/api",
   "version": "0.0.0",
   "private": true,
-  "type": "module",
   "files": [
     "dist"
   ],
+  "type": "module",
   "scripts": {
     "build": "tsc --noEmit false --outDir dist",
     "clean": "rm -rf dist .turbo .cache coverage",
@@ -19,10 +19,12 @@
   "dependencies": {
     "@codekeat/database": "workspace:*",
     "@google/genai": "catalog:",
+    "@modelcontextprotocol/sdk": "catalog:",
     "@octokit/rest": "catalog:",
     "@opentelemetry/api": "catalog:",
     "argon2": "catalog:",
     "dotenv": "catalog:",
+    "hono": "catalog:",
     "minimatch": "catalog:",
     "p-queue": "catalog:",
     "parse-diff": "catalog:",

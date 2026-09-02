@@ -35,26 +35,32 @@ Use only sections that add non-obvious value.
 # Agent Instructions
 
 ## Package Manager
+
 - Use **pnpm**: `pnpm install`
 
 ## Commands
-| Task | Command |
-|------|---------|
+
+| Task      | Command                                |
+| --------- | -------------------------------------- |
 | Test file | `pnpm vitest run path/to/file.test.ts` |
-| Lint file | `pnpm eslint path/to/file.ts` |
+| Lint file | `pnpm eslint path/to/file.ts`          |
 
 ## External References
-| Need | File |
-|------|------|
-| Setup | `CONTRIBUTING.md` |
-| Architecture | `docs/architecture.md` |
-| Security policy | `SECURITY.md` |
+
+| Need            | File                   |
+| --------------- | ---------------------- |
+| Setup           | `CONTRIBUTING.md`      |
+| Architecture    | `docs/architecture.md` |
+| Security policy | `SECURITY.md`          |
 
 ## Key Conventions
+
 - Generated files: update with `pnpm generate`; do not edit by hand.
 
 ## Commit Attribution
+
 AI commits MUST include:
+
 ```
 Co-Authored-By: (the agent's name and attribution byline)
 ```
@@ -80,9 +86,10 @@ Good:
 
 ```markdown
 ## External References
-| Need | File |
-|------|------|
-| API contract | `docs/api.md` |
+
+| Need            | File                |
+| --------------- | ------------------- |
+| API contract    | `docs/api.md`       |
 | Release process | `docs/releasing.md` |
 ```
 
