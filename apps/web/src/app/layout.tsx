@@ -4,8 +4,11 @@ import type { ReactNode } from "react";
 import "./styles.css";
 
 export const metadata: Metadata = {
-  title: "Codekeat",
+  title: "Codekeat | Revisão consultiva",
   description: "Relatórios consultivos de pull requests.",
+  icons: {
+    icon: "/codekeat.svg",
+  },
 };
 
 export default function RootLayout({ children }: Readonly<{ children: ReactNode }>): ReactNode {
