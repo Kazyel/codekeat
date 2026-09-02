@@ -10,23 +10,23 @@ consultivo. Não há serviços distribuídos, broker de filas ou quality gate bl
 
 ```text
 GitHub webhook -> GitHub adapter -> Review module -> fila local -> AI model port -> Gemini adapter
-                                         |                               |
-                                         v                               v
-                              SQLite (runs, findings, policy)      Findings tipados
+                                         |                               |              |
+                                         v                               v              v
+                              SQLite (runs, findings, policy)      Findings tipados  Takeat MCP
 
 Web application -------------------------> API interna de leitura e autenticação
 ```
 
 ## Limites
 
-| Área | Responsabilidade | Não deve conhecer |
-|------|------------------|-------------------|
-| `review` | Orquestrar um Review Run e produzir Findings | Probot, Octokit, Gemini, Drizzle |
-| `repository-policy` | Resolver e validar a Repository Policy | Detalhes do modelo de IA |
-| `github` | Receber eventos e obter o diff e contexto do PR | Regras de negócio de Review |
-| `ai` | Adaptar um provedor de modelo ao contrato de análise | HTTP/GitHub/SQLite |
-| `database` | Persistir o estado do Codekeat | Lógica de orquestração |
-| `web` | Autenticar pessoas e exibir histórico e detalhes de Reviews | Webhooks, SDKs de IA e SQLite |
+| Área                | Responsabilidade                                            | Não deve conhecer                |
+| ------------------- | ----------------------------------------------------------- | -------------------------------- |
+| `review`            | Orquestrar um Review Run e produzir Findings                | Probot, Octokit, Gemini, Drizzle |
+| `repository-policy` | Resolver e validar a Repository Policy                      | Detalhes do modelo de IA         |
+| `github`            | Receber eventos e obter o diff e contexto do PR             | Regras de negócio de Review      |
+| `ai`                | Adaptar um provedor de modelo ao contrato de análise        | HTTP/GitHub/SQLite               |
+| `database`          | Persistir o estado do Codekeat                              | Lógica de orquestração           |
+| `web`               | Autenticar pessoas e exibir histórico e detalhes de Reviews | Webhooks, SDKs de IA e SQLite    |
 
 O diretório inicial da API deve refletir esses limites em módulos verticais. Código de domínio e
 orquestração fica nos módulos; Probot, Octokit, Gemini e Drizzle ficam nos adaptadores nas bordas.
@@ -41,8 +41,8 @@ Não criar camadas genéricas, repositórios abstratos ou módulos compartilhado
 5. O processador reivindica somente runs `queued`, muda-os para `running` e obtém o PR atual como a Installation.
 6. Se o SHA mudou, o run fica `ignored` com `superseded_head_sha`; caso contrário, o diff completo é
    dividido em Review Chunks de até 100.000 caracteres.
-7. O provedor de IA recebe os chunks sequencialmente e devolve Findings tipados, localizados em linhas
-   adicionadas do respectivo chunk.
+7. O provedor de IA recebe os chunks sequencialmente, consulta código e histórico técnico pelo adaptador
+   MCP filtrado quando necessário e devolve Findings tipados, localizados em linhas adicionadas do chunk.
 8. A API valida, deduplica e persiste todos os Findings e um Review Report pendente com a transição
    atômica para `completed`.
 9. A fila atualiza um comentário consultivo único do Codekeat no PR; sem Findings, publica a confirmação
@@ -106,13 +106,15 @@ painel, sem informar se o e-mail ou a senha foi o dado incorreto.
   finais são `completed`, `failed` e `ignored`.
 - Todo dado externo é validado na borda antes de entrar na aplicação.
 - Credenciais, conteúdo do PR, diff, prompt e resposta do modelo não podem aparecer em logs ou mensagens de erro.
+- Resultados do MCP são dados externos não confiáveis; o token, as consultas e o conteúdo retornado não
+  podem aparecer em logs ou mensagens de erro.
 
 ## Evolução orientada por sinais
 
-| Sinal | Próxima decisão |
-|-------|-----------------|
-| Reinícios ou volume tornam runs locais não confiáveis | Migrar para Postgres e uma fila durável |
-| Necessidade de mais de uma réplica | Migrar do SQLite antes de escalar a API |
-| A política precisa de gestão sem commits | Adicionar interface web e API de administração |
-| Relatórios precisam de filtros ou ações administrativas | Ampliar o painel sem expor SQLite ao frontend |
-| Equipe decidir bloquear PRs | Criar ADR específica para checks, critérios e rollout |
+| Sinal                                                   | Próxima decisão                                       |
+| ------------------------------------------------------- | ----------------------------------------------------- |
+| Reinícios ou volume tornam runs locais não confiáveis   | Migrar para Postgres e uma fila durável               |
+| Necessidade de mais de uma réplica                      | Migrar do SQLite antes de escalar a API               |
+| A política precisa de gestão sem commits                | Adicionar interface web e API de administração        |
+| Relatórios precisam de filtros ou ações administrativas | Ampliar o painel sem expor SQLite ao frontend         |
+| Equipe decidir bloquear PRs                             | Criar ADR específica para checks, critérios e rollout |

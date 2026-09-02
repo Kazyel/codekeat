@@ -1,11 +1,19 @@
-# Codekeat
+<p align="center">
+  <img src="assets/codekeat.svg" alt="Símbolo do Codekeat" width="180" />
+</p>
+
+<h1 align="center">Codekeat</h1>
+
+<p align="center">
+  <strong>Review consultivo de pull requests, com contexto técnico e findings concretos.</strong>
+</p>
+
+<p align="center">
+  <code>GitHub → fila local → Gemini + MCP da Takeat → relatório no PR e painel</code>
+</p>
 
 Codekeat analisa pull requests do GitHub com IA e publica relatórios consultivos. Nesta fase, ele nunca
 bloqueia merge, cria Checks ou aprova/reprova pull requests.
-
-```text
-GitHub App webhook → API/Probot → fila local → Gemini → SQLite → comentário no PR e painel
-```
 
 ## Pré-requisitos
 
@@ -33,7 +41,7 @@ cp apps/api/.env.example apps/api/.env
 cp apps/web/.env.example apps/web/.env
 ```
 
-Preencha `apps/api/.env` com os valores da GitHub App, Gemini e do administrador inicial:
+Preencha `apps/api/.env` com os valores da GitHub App, Gemini, MCP da Takeat e do administrador inicial:
 
 ```dotenv
 APP_ID=
@@ -41,6 +49,10 @@ PRIVATE_KEY_PATH=/caminho/absoluto/para/codekeat.private-key.pem
 WEBHOOK_SECRET=
 GOOGLE_API_KEY=
 GEMINI_MODEL=gemini-3.6-flash
+TAKEAT_MCP_URL=https://mcp.takeat.app/mcp
+TAKEAT_MCP_TOKEN_URL=https://mcp.takeat.app/oauth/token
+TAKEAT_MCP_CLIENT_ID=
+TAKEAT_MCP_CLIENT_SECRET=
 ALLOWED_GITHUB_ACCOUNTS=seu-login-ou-organizacao
 DASHBOARD_API_TOKEN=
 INITIAL_ADMIN_EMAIL=seu-email@empresa.com
@@ -49,6 +61,10 @@ INITIAL_ADMIN_PASSWORD=uma-senha-com-pelo-menos-8-caracteres
 
 `PRIVATE_KEY` é uma alternativa a `PRIVATE_KEY_PATH`, mas use apenas uma das duas. O administrador é
 criado na primeira inicialização; alterar essas variáveis depois não redefine a senha existente.
+
+`TAKEAT_MCP_URL` e `TAKEAT_MCP_TOKEN_URL` devem usar HTTPS. A API troca as credenciais permanentes
+por um access token, mantém o token somente em memória e o renova antes do vencimento. Credenciais e
+tokens não são enviados ao Gemini.
 
 Em `apps/web/.env`, configure a URL local da API e repita exatamente o token interno:
 
@@ -71,10 +87,10 @@ Suba API e painel juntos:
 pnpm dev
 ```
 
-| Serviço | Endereço |
-|---------|----------|
+| Serviço        | Endereço                |
+| -------------- | ----------------------- |
 | API e webhooks | `http://localhost:3001` |
-| Painel | `http://localhost:3501` |
+| Painel         | `http://localhost:3501` |
 
 Para iniciar somente a API:
 
@@ -89,14 +105,14 @@ O painel usa e-mail e senha locais. Acesse `http://localhost:3501/login` com as 
 
 Registre uma GitHub App pública para **Any account**, sem Marketplace. Configure:
 
-| Item | Valor |
-|------|-------|
-| Webhook URL | `https://<dominio>/api/github/webhooks` |
-| Webhook secret | Mesmo valor de `WEBHOOK_SECRET` |
-| Contents | Read-only |
-| Pull requests | Read-only |
-| Issues | Read and write |
-| Eventos | Pull request, Installation, Installation repositories |
+| Item           | Valor                                                 |
+| -------------- | ----------------------------------------------------- |
+| Webhook URL    | `https://<dominio>/api/github/webhooks`               |
+| Webhook secret | Mesmo valor de `WEBHOOK_SECRET`                       |
+| Contents       | Read-only                                             |
+| Pull requests  | Read-only                                             |
+| Issues         | Read and write                                        |
+| Eventos        | Pull request, Installation, Installation repositories |
 
 Instale a App somente nos repositórios desejados. `ALLOWED_GITHUB_ACCOUNTS` é uma segunda proteção:
 somente organizações ou perfis dessa lista terão PRs processados. Após conceder `Issues: Read and write`,
@@ -109,15 +125,15 @@ para os detalhes operacionais e de permissões.
 ## Fluxo de revisão
 
 Eventos elegíveis de PR criam um Review Run. A fila local processa um run de cada vez, obtém o diff como
-GitHub App, envia chunks sequenciais ao Gemini e persiste os Findings no SQLite. Ao concluir, atualiza um
-único comentário consultivo no PR. Quando não encontra um problema concreto, o relatório diz isso
-explicitamente.
+GitHub App e envia chunks sequenciais ao Gemini. O modelo pode consultar código e histórico técnico no
+MCP da Takeat antes de produzir Findings. A API persiste os Findings no SQLite e atualiza um único
+comentário consultivo no PR. Quando não encontra um problema concreto, o relatório diz isso explicitamente.
 
 Um PR em draft, uma conta fora da allowlist ou um repositório removido da instalação não é analisado.
 
 ## Banco local e painel
 
-O SQLite está em `data/codekeat.db` por padrão. Para inspecioná-lo com Drizzle Studio:
+O SQLite está em `packages/database/data/codekeat.db` por padrão. Para inspecioná-lo com Drizzle Studio:
 
 ```sh
 pnpm db:studio
@@ -142,7 +158,7 @@ pnpm env:check
 pnpm docker:up
 ```
 
-O Compose usa uma única réplica da API e persiste o SQLite em `CODEKEAT_DATA_DIR` (por padrão, `./data`).
+O Compose usa uma única réplica da API e persiste o SQLite em `CODEKEAT_DATA_DIR` (por padrão, `./packages/database/data`).
 Os serviços ficam ligados em loopback por padrão; coloque um proxy HTTPS na frente deles para uso externo.
 
 ## Verificação
@@ -155,23 +171,17 @@ pnpm build
 pnpm docker:config
 ```
 
-## Implantação na AWS
-
-A implantação inicial usa imagens no ECR e uma instância EC2 ou Lightsail com volume EBS local para o
-SQLite. Não execute mais de uma réplica da API enquanto o banco for SQLite. Leia
-[infra/aws/README.md](infra/aws/README.md) antes de implantar.
-
 ## Segurança operacional
 
 - Nunca versione `.env`, arquivos PEM ou o SQLite.
 - Não exponha `DASHBOARD_API_TOKEN` como variável `NEXT_PUBLIC_`.
 - Use HTTPS para o endpoint público de webhook e para o painel.
 - Faça snapshots e backups periódicos do volume que contém o SQLite.
+- Não execute mais de uma réplica da API enquanto o banco for SQLite.
 - A GitHub App não executa código vindo do pull request e a policy é lida apenas da branch padrão.
 
 ## Documentação
 
 - [Arquitetura](docs/architecture.md)
 - [GitHub App](docs/github-app.md)
-- [Implantação na AWS](infra/aws/README.md)
 - [Linguagem do domínio](CONTEXT.md)
