@@ -1,14 +1,99 @@
 {
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["typescript", "unicorn", "oxc", "import", "react", "jsx-a11y", "nextjs", "vitest"],
-  "categories": {
-    "correctness": "error"
-  },
-  "ignorePatterns": ["**/drizzle/meta/**"],
-  "rules": {
-    "vitest/require-mock-type-parameters": "off"
-  },
-  "env": {
-    "builtin": true
-  }
+	"$schema": "./node_modules/oxlint/configuration_schema.json",
+	"plugins": ["typescript", "unicorn", "oxc", "import", "react", "jsx-a11y", "nextjs", "vitest"],
+	"categories": {
+		"correctness": "error"
+	},
+	"ignorePatterns": ["**/drizzle/meta/**"],
+	"rules": {
+		"vitest/require-mock-type-parameters": "off"
+	},
+	"overrides": [
+		{
+			"files": ["apps/api/src/**/*.ts", "packages/database/src/**/*.ts"],
+			"rules": {
+				"complexity": ["error", 5],
+				"import/no-cycle": "error"
+			}
+		},
+		{
+			"files": ["apps/api/src/features/**/*.ts"],
+			"rules": {
+				"no-restricted-imports": [
+					"error",
+					{
+						"patterns": [
+							{
+								"group": [
+									"../{auth,github,review,repository-policy}/**",
+									"../../{auth,github,review,repository-policy}/**",
+									"../../../{auth,github,review,repository-policy}/**",
+									"../../../../{auth,github,review,repository-policy}/**",
+									"#features/*/*"
+								],
+								"message": "Import another feature through its public #features/* alias."
+							},
+							{
+								"group": ["#core/workflows/*", "**/core/workflows/**"],
+								"message": "Features must not import core workflows."
+							}
+						]
+					}
+				]
+			}
+		},
+		{
+			"files": ["apps/api/src/integrations/**/*.ts"],
+			"rules": {
+				"no-restricted-imports": [
+					"error",
+					{
+						"patterns": [
+							{
+								"group": [
+									"#features/*/*",
+									"../../features/**",
+									"../../../features/**",
+									"../../../../features/**"
+								],
+								"message": "Integrations may import only public feature contracts."
+							},
+							{
+								"group": ["#core/workflows/*", "**/core/workflows/**"],
+								"message": "Integrations must not depend on workflows."
+							}
+						]
+					}
+				]
+			}
+		},
+		{
+			"files": ["apps/api/src/shared/**/*.ts"],
+			"rules": {
+				"no-restricted-imports": [
+					"error",
+					{
+						"patterns": [
+							{
+								"group": [
+									"#features/*",
+									"#features/*/*",
+									"#integrations/*",
+									"#integrations/*/*",
+									"#core/workflows/*",
+									"**/features/**",
+									"**/integrations/**",
+									"**/core/workflows/**"
+								],
+								"message": "Shared modules must remain independent of features, integrations, and workflows."
+							}
+						]
+					}
+				]
+			}
+		}
+	],
+	"env": {
+		"builtin": true
+	}
 }

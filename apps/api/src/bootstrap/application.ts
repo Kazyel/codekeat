@@ -1,91 +1,143 @@
 import {
-  createDatabaseConnection,
-  type DatabaseConnection,
-  migrateDatabase,
-  WebhookStore,
+	createDatabaseConnection,
+	type DatabaseConnection,
+	migrateDatabase,
 } from "@codekeat/database";
 import type { ApplicationFunctionOptions, Probot } from "probot";
-import { GeminiReviewModel } from "../modules/ai/gemini-review-model.js";
-import { TakeatMcpAccessTokenProvider, TakeatMcpTool } from "../modules/ai/takeat-mcp-tool.js";
-import { Argon2PasswordHasher } from "../modules/dashboard-auth/argon2-password-hasher.js";
-import { DashboardAuthenticator } from "../modules/dashboard-auth/dashboard-authenticator.js";
-import { GitHubReviewInputSource } from "../modules/github/load-pull-request-input.js";
-import { GitHubReviewReportPublisher } from "../modules/github/publish-review-report.js";
-import { createDashboardAuthApiHandler } from "../modules/github/register-dashboard-auth-api.js";
-import { createReadApiHandler } from "../modules/github/register-read-api.js";
-import { registerWebhooks } from "../modules/github/register-webhooks.js";
-import { ReviewRunProcessor } from "../modules/review/process-review-run.js";
-import { ReviewReportPublisher } from "../modules/review/publish-review-report.js";
-import type { ReviewRunProcessorTask } from "../modules/review/review-run.js";
-import { LocalReviewWorkQueue } from "../modules/review/review-run-queue.js";
+
+import { requestReviewFromGithub } from "#core/workflows/request-review-from-github";
+import {
+	Argon2PasswordService,
+	createDashboardAuthController,
+	DashboardAuthRepository,
+	DashboardAuthService,
+} from "#features/auth";
+import {
+	GitHubAccessRepository,
+	GitHubReviewInputService,
+	GitHubReviewPublicationService,
+	registerGitHubWebhookController,
+	WebhookDeliveryRepository,
+} from "#features/github";
+import { GeminiReviewService } from "#integrations/gemini";
+import {
+	createReviewReadController,
+	ReviewQueryRepository,
+	ReviewQueueService,
+	ReviewReportPublisherService,
+	ReviewReportRepository,
+	ReviewRunProcessorService,
+	type ReviewRunProcessorTask,
+	ReviewRunRepository,
+} from "#features/review";
+import { TakeatMcpAccessTokenService, TakeatMcpTool } from "#integrations/takeat-mcp";
 import type { ApplicationEnvironment } from "./environment.js";
 
 export async function configureApplication(
-  app: Probot,
-  environment: ApplicationEnvironment,
-  options: ApplicationFunctionOptions,
+	app: Probot,
+	environment: ApplicationEnvironment,
+	options: ApplicationFunctionOptions,
 ): Promise<DatabaseConnection> {
-  const connection = createDatabaseConnection(environment.databasePath);
-  try {
-    migrateDatabase(connection);
+	const connection = createDatabaseConnection(environment.databasePath);
+	try {
+		migrateDatabase(connection);
 
-    const store = new WebhookStore(connection);
+		/*
+			Repositories persistindo os dados do dashboard, GitHub e revisão.
+		*/
+		const authRepository = new DashboardAuthRepository(connection);
+		const githubAccessRepository = new GitHubAccessRepository(connection);
+		const webhookDeliveryRepository = new WebhookDeliveryRepository(connection);
+		const reviewReportRepository = new ReviewReportRepository(connection);
+		const reviewRunRepository = new ReviewRunRepository(connection, reviewReportRepository);
+		const reviewQueryRepository = new ReviewQueryRepository(connection);
 
-    const dashboardAuthenticator = new DashboardAuthenticator(store, new Argon2PasswordHasher());
-    await dashboardAuthenticator.provisionInitialAdmin({
-      email: environment.initialAdminEmail,
-      password: environment.initialAdminPassword,
-    });
+		/*
+			Autenticação e provisionamento do administrador inicial.
+		*/
+		const dashboardAuthenticator = new DashboardAuthService(
+			authRepository,
+			new Argon2PasswordService(),
+		);
+		await dashboardAuthenticator.provisionInitialAdmin({
+			email: environment.initialAdminEmail,
+			password: environment.initialAdminPassword,
+		});
 
-    const takeatMcpAccessTokenProvider = new TakeatMcpAccessTokenProvider(
-      environment.takeatMcpTokenUrl,
-      environment.takeatMcpClientId,
-      environment.takeatMcpClientSecret,
-    );
+		/*
+			Serviço de token para a API do Takeat MCP e modelo de revisão Gemini.
+		*/
+		const takeatMcpAccessTokenService = new TakeatMcpAccessTokenService(
+			environment.takeatMcpTokenUrl,
+			environment.takeatMcpClientId,
+			environment.takeatMcpClientSecret,
+		);
+		const model = new GeminiReviewService(
+			environment.googleApiKey,
+			environment.geminiModel,
+			new TakeatMcpTool(environment.takeatMcpUrl, takeatMcpAccessTokenService),
+			app.log,
+		);
 
-    const model = new GeminiReviewModel(
-      environment.googleApiKey,
-      environment.geminiModel,
-      new TakeatMcpTool(environment.takeatMcpUrl, takeatMcpAccessTokenProvider),
-      app.log,
-    );
+		/*
+			Publicador de relatórios de revisão e processador de execução de revisão.
+		*/
+		const publisher = new ReviewReportPublisherService(
+			reviewReportRepository,
+			new GitHubReviewPublicationService(app),
+			app.log,
+		);
+		let processor: ReviewRunProcessorService;
+		const reviewTask: ReviewRunProcessorTask = {
+			async process(reviewRunId: string): Promise<void> {
+				await processor.process(reviewRunId);
+			},
+		};
 
-    const publisher = new ReviewReportPublisher(
-      store,
-      new GitHubReviewReportPublisher(app),
-      app.log,
-    );
+		/*
+			Fila de trabalho de revisão local.
+		*/
+		const queue = new ReviewQueueService(reviewTask, publisher, app.log);
+		processor = new ReviewRunProcessorService(
+			reviewRunRepository,
+			new GitHubReviewInputService(app),
+			model,
+			queue,
+			app.log,
+		);
 
-    let processor: ReviewRunProcessor;
-    const reviewTask: ReviewRunProcessorTask = {
-      async process(reviewRunId: string): Promise<void> {
-        await processor.process(reviewRunId);
-      },
-    };
+		/*
+			Registro de webhooks para solicitações de revisão.
+		*/
+		registerGitHubWebhookController(app, {
+			accessRepository: githubAccessRepository,
+			deliveryRepository: webhookDeliveryRepository,
+			allowedAccounts: environment.allowedGithubAccounts,
+			requestReview: (event, policyService) =>
+				requestReviewFromGithub(event, {
+					accessRepository: githubAccessRepository,
+					allowedAccounts: environment.allowedGithubAccounts,
+					deliveryRepository: webhookDeliveryRepository,
+					policyService,
+					queue,
+					reportRepository: reviewReportRepository,
+					runRepository: reviewRunRepository,
+				}),
+		});
 
-    const queue = new LocalReviewWorkQueue(reviewTask, publisher, app.log);
-    processor = new ReviewRunProcessor(
-      store,
-      new GitHubReviewInputSource(app),
-      model,
-      queue,
-      app.log,
-    );
+		/*
+			API de leitura de revisões e autenticação do dashboard.
+		*/
+		options.addHandler(
+			createReviewReadController(reviewQueryRepository, environment.dashboardApiToken),
+		);
+		options.addHandler(
+			createDashboardAuthController(dashboardAuthenticator, environment.dashboardApiToken),
+		);
 
-    registerWebhooks(app, {
-      store,
-      queue,
-      allowedAccounts: environment.allowedGithubAccounts,
-    });
-
-    options.addHandler(createReadApiHandler(store, environment.dashboardApiToken));
-    options.addHandler(
-      createDashboardAuthApiHandler(dashboardAuthenticator, environment.dashboardApiToken),
-    );
-
-    return connection;
-  } catch (error) {
-    connection.close();
-    throw error;
-  }
+		return connection;
+	} catch (error) {
+		connection.close();
+		throw error;
+	}
 }

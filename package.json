@@ -1,35 +1,35 @@
 {
-  "name": "codekeat",
-  "version": "0.0.0",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "build": "turbo run build",
-    "check": "oxlint . && oxfmt --check .",
-    "clean": "turbo run clean && rm -rf .turbo",
-    "db:studio": "pnpm --filter @codekeat/database db:studio",
-    "dev": "turbo run dev",
-    "dev:api": "pnpm --filter @codekeat/api dev",
-    "docker:build": "docker compose build",
-    "docker:config": "docker compose config --no-interpolate",
-    "docker:down": "docker compose down",
-    "docker:up": "docker compose up --build --detach",
-    "env:check": "pnpm --filter @codekeat/api env:check && pnpm --filter @codekeat/web env:check",
-    "format": "oxfmt --write .",
-    "format:check": "oxfmt --check .",
-    "lint": "oxlint .",
-    "test": "turbo run test",
-    "typecheck": "turbo run typecheck"
-  },
-  "devDependencies": {
-    "oxfmt": "catalog:",
-    "oxlint": "catalog:",
-    "turbo": "catalog:",
-    "typescript": "catalog:"
-  },
-  "engines": {
-    "node": ">=24.0.0",
-    "pnpm": ">=10.0.0"
-  },
-  "packageManager": "pnpm@10.33.2"
+	"name": "codekeat",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"build": "turbo run build",
+		"check": "oxlint . && oxfmt --check .",
+		"clean": "turbo run clean && rm -rf .turbo",
+		"db:studio": "pnpm --filter @codekeat/database db:studio",
+		"dev": "turbo run dev",
+		"dev:api": "pnpm --filter @codekeat/api dev",
+		"docker:build": "docker compose build",
+		"docker:config": "docker compose config --no-interpolate",
+		"docker:down": "docker compose down",
+		"docker:up": "docker compose up --build --detach",
+		"env:check": "pnpm --filter @codekeat/api env:check && pnpm --filter @codekeat/web env:check",
+		"format": "oxfmt --write .",
+		"format:check": "oxfmt --check .",
+		"lint": "oxlint .",
+		"test": "turbo run test",
+		"typecheck": "turbo run typecheck"
+	},
+	"devDependencies": {
+		"oxfmt": "catalog:",
+		"oxlint": "catalog:",
+		"turbo": "catalog:",
+		"typescript": "catalog:"
+	},
+	"engines": {
+		"node": ">=24.0.0",
+		"pnpm": ">=10.0.0"
+	},
+	"packageManager": "pnpm@10.33.2"
 }

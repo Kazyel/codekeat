@@ -1,9 +1,9 @@
 {
-  "extends": "@codekeat/typescript-config/node.json",
-  "compilerOptions": {
-    "outDir": "dist",
-    "tsBuildInfoFile": ".cache/tsbuildinfo/database.tsbuildinfo"
-  },
-  "include": ["src/**/*.ts", "drizzle.config.ts"],
-  "exclude": ["node_modules", "dist", "drizzle"]
+	"extends": "@codekeat/typescript-config/node.json",
+	"compilerOptions": {
+		"outDir": "dist",
+		"tsBuildInfoFile": ".cache/tsbuildinfo/database.tsbuildinfo"
+	},
+	"include": ["src/**/*.ts", "drizzle.config.ts"],
+	"exclude": ["node_modules", "dist", "drizzle"]
 }

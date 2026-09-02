@@ -1,51 +1,59 @@
 import { describe, expect, it } from "vitest";
 
-import { processWebhookDelivery } from "../src/modules/github/webhook-delivery.js";
+import { processWebhookDelivery } from "#features/github";
 import { createTestDatabase } from "./test-database.js";
 
 describe("processWebhookDelivery", () => {
-  it("does not process a handled delivery twice", async () => {
-    const database = createTestDatabase();
-    let executions = 0;
-    const delivery = {
-      deliveryId: "delivery-1",
-      eventName: "pull_request.opened",
-      installationId: 1,
-    };
+	it("does not process a handled delivery twice", async () => {
+		const database = createTestDatabase();
+		let executions = 0;
+		const delivery = {
+			deliveryId: "delivery-1",
+			eventName: "pull_request.opened",
+			installationId: 1,
+		};
 
-    await processWebhookDelivery(database.store, delivery, async () => {
-      executions += 1;
-      return { kind: "handled" };
-    });
-    const duplicate = await processWebhookDelivery(database.store, delivery, async () => {
-      executions += 1;
-      return { kind: "handled" };
-    });
+		await processWebhookDelivery(database.webhookDeliveryRepository, delivery, async () => {
+			executions += 1;
+			return { kind: "handled" };
+		});
+		const duplicate = await processWebhookDelivery(
+			database.webhookDeliveryRepository,
+			delivery,
+			async () => {
+				executions += 1;
+				return { kind: "handled" };
+			},
+		);
 
-    expect(executions).toBe(1);
-    expect(duplicate).toBe("duplicate");
-    database.close();
-  });
+		expect(executions).toBe(1);
+		expect(duplicate).toBe("duplicate");
+		database.close();
+	});
 
-  it("allows a failed delivery to be claimed again", async () => {
-    const database = createTestDatabase();
-    const delivery = {
-      deliveryId: "delivery-2",
-      eventName: "pull_request.opened",
-      installationId: 1,
-    };
+	it("allows a failed delivery to be claimed again", async () => {
+		const database = createTestDatabase();
+		const delivery = {
+			deliveryId: "delivery-2",
+			eventName: "pull_request.opened",
+			installationId: 1,
+		};
 
-    await expect(
-      processWebhookDelivery(database.store, delivery, async () => {
-        throw new Error("temporary failure");
-      }),
-    ).rejects.toThrow("temporary failure");
+		await expect(
+			processWebhookDelivery(database.webhookDeliveryRepository, delivery, async () => {
+				throw new Error("temporary failure");
+			}),
+		).rejects.toThrow("temporary failure");
 
-    const retry = await processWebhookDelivery(database.store, delivery, async () => ({
-      kind: "handled",
-    }));
+		const retry = await processWebhookDelivery(
+			database.webhookDeliveryRepository,
+			delivery,
+			async () => ({
+				kind: "handled",
+			}),
+		);
 
-    expect(retry).toBe("processed");
-    database.close();
-  });
+		expect(retry).toBe("processed");
+		database.close();
+	});
 });

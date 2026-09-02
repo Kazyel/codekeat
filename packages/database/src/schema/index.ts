@@ -1,8 +1,8 @@
-export { dashboardSessions } from "./dashboard-sessions.js";
-export { dashboardUsers } from "./dashboard-users.js";
-export { findings } from "./findings.js";
-export { installations } from "./installations.js";
-export { repositories } from "./repositories.js";
-export { reviewReports } from "./review-reports.js";
-export { reviewRuns } from "./review-runs.js";
-export { webhookDeliveries } from "./webhook-deliveries.js";
+export { dashboardSessions } from "./auth/dashboard-sessions.js";
+export { dashboardUsers } from "./auth/dashboard-users.js";
+export { installations } from "./github/installations.js";
+export { repositories } from "./github/repositories.js";
+export { webhookDeliveries } from "./github/webhook-deliveries.js";
+export { findings } from "./review/findings.js";
+export { reviewReports } from "./review/review-reports.js";
+export { reviewRuns } from "./review/review-runs.js";

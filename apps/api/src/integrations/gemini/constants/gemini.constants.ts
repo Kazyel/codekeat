@@ -1,0 +1,1 @@
+export const MAXIMUM_REMOTE_MCP_CALLS = 6;

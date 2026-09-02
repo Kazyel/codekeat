@@ -25,13 +25,13 @@ A API executará um cliente MCP oficial sobre Streamable HTTP. Um adaptador loca
 
 Essa abordagem mantém as credenciais e o access token dentro do processo do Codekeat. A alternativa `mcpServers` do Gemini foi descartada porque delegaria a conexão e a credencial à infraestrutura do provedor e não oferece, na versão instalada, o mesmo controle local da allowlist. A pré-busca determinística foi descartada porque impediria o modelo de escolher o contexto necessário para cada problema.
 
-O `@google/genai@2.16.0` classifica `mcpToTool` como experimental. O adaptador isola essa dependência para limitar o impacto de futuras mudanças no SDK.
+O `@google/genai@2.16.0` classifica `mcpToTool` como experimental. A integração isola essa dependência para limitar o impacto de futuras mudanças no SDK.
 
 ## Componentes
 
 ### `TakeatMcpTool`
 
-Novo adaptador em `apps/api/src/modules/ai/takeat-mcp-tool.ts` com estas responsabilidades:
+Integração em `apps/api/src/integrations/takeat-mcp` com estas responsabilidades:
 
 - obter um access token em `TAKEAT_MCP_TOKEN_URL` pelo fluxo `client_credentials`;
 - manter o token somente em memória e compartilhar uma renovação concorrente;
@@ -52,8 +52,8 @@ O modelo continuará implementando o contrato existente:
 
 ```ts
 interface ReviewModel {
-  readonly name: string;
-  review(input: ReviewInput, chunk: ReviewInputChunk): Promise<readonly ReviewFinding[]>;
+	readonly name: string;
+	review(input: ReviewInput, chunk: ReviewInputChunk): Promise<readonly ReviewFinding[]>;
 }
 ```
 
@@ -111,7 +111,7 @@ O pacote `@modelcontextprotocol/sdk` será fixado no catálogo do workspace em u
 
 ## Segurança
 
-- O adaptador aplica a allowlist tanto na descoberta quanto na execução.
+- A integração aplica a allowlist tanto na descoberta quanto na execução.
 - Credenciais e access tokens não saem das conexões entre a API e os endpoints da Takeat.
 - Conteúdo retornado pelo MCP é tratado como entrada externa não confiável.
 - O prompt proíbe seguir instruções encontradas em código, commits, diffs ou documentação recuperada.
@@ -120,8 +120,9 @@ O pacote `@modelcontextprotocol/sdk` será fixado no catálogo do workspace em u
 
 ## Arquivos previstos
 
-- `apps/api/src/modules/ai/takeat-mcp-tool.ts`
-- `apps/api/src/modules/ai/gemini-review-model.ts`
+- `apps/api/src/integrations/takeat-mcp/services/takeat-mcp.service.ts`
+- `apps/api/src/integrations/takeat-mcp/services/takeat-mcp-access-token.service.ts`
+- `apps/api/src/integrations/gemini/services/gemini-review.service.ts`
 - `apps/api/src/bootstrap/environment.ts`
 - `apps/api/src/bootstrap/application.ts`
 - testes correspondentes em `apps/api/tests`
