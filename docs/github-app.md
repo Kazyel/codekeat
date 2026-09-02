@@ -14,8 +14,9 @@ servidor controla quais organizações e perfis pessoais recebem processamento.
 | Issues                  | Read and write                                         |
 | Eventos                 | Pull request, Installation e Installation repositories |
 
-`Issues: Read and write` permite criar e atualizar o comentário consultivo do relatório no PR. Não
-conceda permissões de Checks ou qualquer outro acesso de escrita nesta fase.
+O GitHub expõe comentários gerais de PR pela API de Issues. Por isso, `Issues: Read and write` permite
+criar e atualizar o comentário consultivo, enquanto `Pull requests: Read-only` basta para ler o PR e o
+diff. Não conceda permissões de Checks ou qualquer outro acesso de escrita nesta fase.
 
 ## Ambiente
 
