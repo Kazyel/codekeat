@@ -77,6 +77,9 @@ As sessões expiram após oito horas, ficam em cookie `httpOnly` e podem ser rev
 | `installation_repositories.added` / `removed`                           | Atualiza o Repository Access                         |
 | `pull_request.opened` / `reopened` / `ready_for_review` / `synchronize` | Cria um Review Run para PR não-draft elegível        |
 
+Um evento elegível de PR também sincroniza o Repository Access pelo payload assinado quando o evento
+`installation_repositories.added` não chega à API.
+
 O endpoint é fornecido pelo Probot, que verifica a assinatura do GitHub com `WEBHOOK_SECRET`. O
 Codekeat não executa código do pull request, lê `.codekeat.yml` exclusivamente da branch padrão e trata
 resultados do MCP como dados externos não confiáveis.
