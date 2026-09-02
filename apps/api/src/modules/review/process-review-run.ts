@@ -35,6 +35,7 @@ export class ReviewRunProcessor {
 
     const startedAt = performance.now();
     this.logger.info({ modelName: this.model.name, reviewRunId }, "review_run.started");
+
     const inputResult = await this.loadInput(run);
     if (inputResult.kind === "ignored") {
       this.store.ignoreReviewRun(reviewRunId, inputResult.ignoreReason);
@@ -68,6 +69,7 @@ export class ReviewRunProcessor {
       storedFindings,
       randomUUID(),
     );
+
     await this.queue.enqueueReport(reviewReportId);
     this.logger.info(
       {
@@ -89,6 +91,7 @@ export class ReviewRunProcessor {
       if (result.kind === "failed") {
         return result;
       }
+
       findings.push(...result.findings);
     }
 
@@ -112,11 +115,13 @@ export class ReviewRunProcessor {
       if (!findings.every((finding) => isValidFinding(finding, chunk))) {
         return { kind: "failed", errorCode: "finding_location_invalid" };
       }
+
       return { kind: "completed", findings };
     } catch (error) {
       if (error instanceof ReviewModelResponseError) {
         return { kind: "failed", errorCode: "gemini_invalid_response" };
       }
+
       return { kind: "failed", errorCode: "gemini_request_failed" };
     }
   }

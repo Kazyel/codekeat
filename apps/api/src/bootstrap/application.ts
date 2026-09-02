@@ -6,6 +6,7 @@ import {
 } from "@codekeat/database";
 import type { ApplicationFunctionOptions, Probot } from "probot";
 import { GeminiReviewModel } from "../modules/ai/gemini-review-model.js";
+import { TakeatMcpAccessTokenProvider, TakeatMcpTool } from "../modules/ai/takeat-mcp-tool.js";
 import { Argon2PasswordHasher } from "../modules/dashboard-auth/argon2-password-hasher.js";
 import { DashboardAuthenticator } from "../modules/dashboard-auth/dashboard-authenticator.js";
 import { GitHubReviewInputSource } from "../modules/github/load-pull-request-input.js";
@@ -27,25 +28,41 @@ export async function configureApplication(
   const connection = createDatabaseConnection(environment.databasePath);
   try {
     migrateDatabase(connection);
+
     const store = new WebhookStore(connection);
+
     const dashboardAuthenticator = new DashboardAuthenticator(store, new Argon2PasswordHasher());
     await dashboardAuthenticator.provisionInitialAdmin({
       email: environment.initialAdminEmail,
       password: environment.initialAdminPassword,
     });
 
-    const model = new GeminiReviewModel(environment.googleApiKey, environment.geminiModel);
+    const takeatMcpAccessTokenProvider = new TakeatMcpAccessTokenProvider(
+      environment.takeatMcpTokenUrl,
+      environment.takeatMcpClientId,
+      environment.takeatMcpClientSecret,
+    );
+
+    const model = new GeminiReviewModel(
+      environment.googleApiKey,
+      environment.geminiModel,
+      new TakeatMcpTool(environment.takeatMcpUrl, takeatMcpAccessTokenProvider),
+      app.log,
+    );
+
     const publisher = new ReviewReportPublisher(
       store,
       new GitHubReviewReportPublisher(app),
       app.log,
     );
+
     let processor: ReviewRunProcessor;
     const reviewTask: ReviewRunProcessorTask = {
       async process(reviewRunId: string): Promise<void> {
         await processor.process(reviewRunId);
       },
     };
+
     const queue = new LocalReviewWorkQueue(reviewTask, publisher, app.log);
     processor = new ReviewRunProcessor(
       store,
@@ -60,6 +77,7 @@ export async function configureApplication(
       queue,
       allowedAccounts: environment.allowedGithubAccounts,
     });
+
     options.addHandler(createReadApiHandler(store, environment.dashboardApiToken));
     options.addHandler(
       createDashboardAuthApiHandler(dashboardAuthenticator, environment.dashboardApiToken),

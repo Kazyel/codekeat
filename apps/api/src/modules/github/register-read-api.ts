@@ -4,7 +4,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { WebhookStore } from "@codekeat/database";
 import { z } from "zod";
 
-const reviewRunsPath = "/api/v1/review-runs";
+const REVIEW_RUNS_PATH = "/api/v1/review-runs";
 const reviewRunIdSchema = z.string().uuid();
 
 type HttpHandler = (request: IncomingMessage, response: ServerResponse) => boolean;
@@ -24,7 +24,7 @@ function handleRequest(
   }
 
   const url = new URL(request.url ?? "/", "http://localhost");
-  if (!url.pathname.startsWith(reviewRunsPath)) {
+  if (!url.pathname.startsWith(REVIEW_RUNS_PATH)) {
     return false;
   }
 
@@ -45,6 +45,7 @@ function hasValidAuthorization(request: IncomingMessage, dashboardApiToken: stri
   const expected = `Bearer ${dashboardApiToken}`;
   const actualBuffer = Buffer.from(authorization);
   const expectedBuffer = Buffer.from(expected);
+
   return (
     actualBuffer.length === expectedBuffer.length && timingSafeEqual(actualBuffer, expectedBuffer)
   );
@@ -55,7 +56,7 @@ function respondToReviewRunRequest(
   response: ServerResponse,
   store: WebhookStore,
 ): boolean {
-  if (pathname === reviewRunsPath) {
+  if (pathname === REVIEW_RUNS_PATH) {
     sendJson(response, 200, { reviewRuns: store.listReviewRunSummaries() });
     return true;
   }
@@ -77,7 +78,7 @@ function respondToReviewRunRequest(
 }
 
 function parseReviewRunId(pathname: string): string | null {
-  const prefix = `${reviewRunsPath}/`;
+  const prefix = `${REVIEW_RUNS_PATH}/`;
   if (!pathname.startsWith(prefix)) {
     return null;
   }

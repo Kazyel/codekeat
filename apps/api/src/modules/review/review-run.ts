@@ -1,8 +1,6 @@
 import type { ReviewTrigger } from "@codekeat/database";
-
 import type { ResolvedRepositoryPolicy } from "../repository-policy/repository-policy.js";
 
-export type { ReviewTrigger } from "@codekeat/database";
 export type ReviewRunStatus = "queued" | "running" | "completed" | "failed" | "ignored";
 export type FindingSeverity = "critical" | "high" | "medium" | "low";
 export type ReviewRunIgnoreReason = "repository_policy_disabled" | "superseded_head_sha";
