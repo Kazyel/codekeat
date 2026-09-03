@@ -36,7 +36,7 @@ export class ReviewReportRepository {
 			.where(and(eq(reviewRuns.id, reviewRunId), eq(reviewRuns.status, "completed")))
 			.get();
 
-		if (run === undefined || this.isPublishedReportCurrent(run, reviewRunId)) {
+		if (run === undefined || this.isReviewRunPublished(reviewRunId)) {
 			return null;
 		}
 
@@ -69,7 +69,6 @@ export class ReviewReportRepository {
 				repositoryFullName: sql<string>`${repositories.ownerLogin} || '/' || ${repositories.name}`,
 				pullRequestNumber: reviewReports.pullRequestNumber,
 				headSha: reviewRuns.headSha,
-				githubCommentId: reviewReports.githubCommentId,
 			})
 			.from(reviewReports)
 			.innerJoin(reviewRuns, eq(reviewReports.reviewRunId, reviewRuns.id))
@@ -134,9 +133,10 @@ export class ReviewReportRepository {
 				publishedAt: null,
 			})
 			.onConflictDoUpdate({
-				target: [reviewReports.githubRepositoryId, reviewReports.pullRequestNumber],
+				target: reviewReports.reviewRunId,
 				set: {
-					reviewRunId,
+					githubCommentId: null,
+					githubCommentUrl: null,
 					status: "pending",
 					errorCode: null,
 					updatedAt: now,
@@ -148,7 +148,7 @@ export class ReviewReportRepository {
 		const report = database
 			.select({ id: reviewReports.id })
 			.from(reviewReports)
-			.where(reportMatchesRun(run))
+			.where(eq(reviewReports.reviewRunId, reviewRunId))
 			.get();
 
 		if (report === undefined) {
@@ -158,35 +158,34 @@ export class ReviewReportRepository {
 		return report.id;
 	}
 
-	private isPublishedReportCurrent(run: ReviewRunReference, reviewRunId: string): boolean {
+	private isReviewRunPublished(reviewRunId: string): boolean {
 		const report = this.connection.db
-			.select({ reviewRunId: reviewReports.reviewRunId, status: reviewReports.status })
+			.select({ status: reviewReports.status })
 			.from(reviewReports)
-			.where(reportMatchesRun(run))
+			.where(eq(reviewReports.reviewRunId, reviewRunId))
 			.get();
 
-		return report?.reviewRunId === reviewRunId && report.status === "published";
+		return report?.status === "published";
 	}
 
 	private findFindings(reviewRunId: string): readonly StoredFinding[] {
 		return this.connection.db
 			.select({
 				id: findings.id,
-				severity: findings.severity,
+				severity: sql<
+					StoredFinding["severity"]
+				>`coalesce(${findings.judgeSeverity}, ${findings.severity})`,
 				path: findings.path,
 				line: findings.line,
 				title: findings.title,
 				rationale: findings.rationale,
+				judgeVerdict: findings.judgeVerdict,
+				judgeSeverity: findings.judgeSeverity,
+				judgeRationale: findings.judgeRationale,
+				includedInReport: findings.includedInReport,
 			})
 			.from(findings)
-			.where(eq(findings.reviewRunId, reviewRunId))
+			.where(and(eq(findings.reviewRunId, reviewRunId), eq(findings.includedInReport, true)))
 			.all();
 	}
-}
-
-function reportMatchesRun(run: ReviewRunReference) {
-	return and(
-		eq(reviewReports.githubRepositoryId, run.githubRepositoryId),
-		eq(reviewReports.pullRequestNumber, run.pullRequestNumber),
-	);
 }

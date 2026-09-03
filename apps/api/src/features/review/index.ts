@@ -1,5 +1,6 @@
 export {
 	createReviewReadController,
+	createReviewQualityController,
 	createReviewUsageController,
 } from "./controllers/review-read.controller.js";
 export { ReviewModelResponseError } from "./errors/review-model.error.js";
@@ -11,6 +12,13 @@ export { ReviewQueueService } from "./services/review-queue.service.js";
 export { ReviewReportPublisherService } from "./services/review-report-publisher.service.js";
 export { ReviewRunProcessorService } from "./services/review-run-processor.service.js";
 export type {
+	FindingJudgment,
+	ReviewFindingCandidate,
+	ReviewFindingEvidence,
+	ReviewFindingJudge,
+	ReviewFindingJudgeInput,
+	ReviewFindingJudgment,
+	ReviewFindingJudgmentResult,
 	ReviewInput,
 	ReviewInputChunk,
 	ReviewInputLoadResult,
@@ -26,6 +34,8 @@ export type {
 	ReviewReportComment,
 	ReviewReportErrorCode,
 	ReviewRunDetail,
+	ReviewQualitySummary,
+	ReviewRunCompletion,
 	ReviewRunErrorCode,
 	ReviewRunInput,
 	ReviewRunSummary,

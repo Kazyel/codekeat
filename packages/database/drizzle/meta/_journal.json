@@ -57,6 +57,20 @@
       "when": 1788437672412,
       "tag": "0007_seed-models",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1788445138624,
+      "tag": "0008_nice_avengers",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1788451550171,
+      "tag": "0009_careless_inertia",
+      "breakpoints": true
     }
   ]
 }

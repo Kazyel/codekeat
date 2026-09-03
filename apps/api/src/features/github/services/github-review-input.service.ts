@@ -11,6 +11,7 @@ import {
 	MAXIMUM_PULL_REQUEST_FILES,
 	MAXIMUM_REVIEW_CHUNK_LENGTH,
 } from "../constants/github.constants.js";
+const MAXIMUM_ADJACENT_REFERENCE_LENGTH = 4_000;
 
 interface DiffSection {
 	readonly changedLines: ReadonlyMap<string, ReadonlySet<number>>;
@@ -73,9 +74,12 @@ export class GitHubReviewInputService implements ReviewInputSource {
 
 export function createReviewInputChunks(diff: string): readonly ReviewInputChunk[] {
 	const sections = parseDiff(diff).flatMap(createFileSections);
-	return packSections(sections).map((section, index, packedSections) => ({
+	const packedSections = packSections(sections);
+	return packedSections.map((section, index) => ({
 		changedLines: section.changedLines,
 		diff: section.diff,
+		referenceBefore: takeTrailingLines(packedSections[index - 1]?.diff ?? ""),
+		referenceAfter: takeLeadingLines(packedSections[index + 1]?.diff ?? ""),
 		index: index + 1,
 		total: packedSections.length,
 	}));
@@ -189,4 +193,31 @@ function mergeSections(first: DiffSection, second: DiffSection): DiffSection {
 		changedLines.set(path, new Set([...(changedLines.get(path) ?? []), ...lines]));
 	}
 	return { changedLines, diff: first.diff + second.diff };
+}
+
+function takeLeadingLines(value: string): string {
+	let result = "";
+	for (const line of completeLines(value)) {
+		if (result.length + line.length > MAXIMUM_ADJACENT_REFERENCE_LENGTH) {
+			break;
+		}
+		result += line;
+	}
+	return result;
+}
+
+function takeTrailingLines(value: string): string {
+	let result = "";
+	for (const line of completeLines(value).toReversed()) {
+		if (result.length + line.length > MAXIMUM_ADJACENT_REFERENCE_LENGTH) {
+			break;
+		}
+		result = line + result;
+	}
+	return result;
+}
+
+function completeLines(value: string): readonly string[] {
+	const lines = value.match(/.*(?:\n|$)/g) ?? [];
+	return lines.filter((line) => line.length > 0 && line.endsWith("\n"));
 }
