@@ -1,4 +1,5 @@
 export * from "./constants/github.constants.js";
+export { createGitHubConnectionReadController } from "./controllers/github-connection-read.controller.js";
 export { registerGitHubWebhookController } from "./controllers/github-webhook.controller.js";
 export { GitHubAccessRepository } from "./repositories/github-access.repository.js";
 export { WebhookDeliveryRepository } from "./repositories/webhook-delivery.repository.js";
@@ -10,6 +11,8 @@ export {
 export { GitHubReviewPublicationService } from "./services/github-review-publication.service.js";
 export { processWebhookDelivery } from "./services/webhook-delivery.service.js";
 export type {
+	GitHubInstallationSummary,
+	GitHubRepositoryAccessSummary,
 	InstallationInput,
 	InstallationStatus,
 	RepositoryInput,

@@ -239,51 +239,84 @@ code,
 	padding: 10px 12px;
 }
 
-.masthead,
-.review-header {
-	padding-bottom: 30px;
+.masthead {
+	align-items: center;
+	display: grid;
+	gap: 24px;
+	grid-template-columns: auto minmax(0, 1fr) auto;
+	padding-bottom: 24px;
 	position: relative;
 }
 
 .masthead::before,
-.review-header::before,
-.masthead::after,
-.review-header::after {
+.masthead::after {
 	bottom: 0;
 	content: "";
 	height: 3px;
 	position: absolute;
 }
 
-.masthead::before,
-.review-header::before {
+.masthead::before {
 	background: var(--brand-red);
 	left: 0;
 	width: 68%;
 }
 
-.masthead::after,
-.review-header::after {
+.masthead::after {
 	background: var(--brand-orange);
 	right: 0;
 	width: 32%;
 }
 
-.masthead {
-	align-items: flex-start;
+.dashboard-navigation {
+	align-items: center;
 	display: flex;
-	gap: 28px;
-	justify-content: space-between;
+	flex-wrap: wrap;
+	gap: 6px;
+	justify-content: center;
 }
 
-.page-title {
-	align-items: flex-start;
-	display: flex;
-	gap: clamp(26px, 5vw, 64px);
+.dashboard-navigation a {
+	border-bottom: 3px solid transparent;
+	font-weight: 700;
+	padding: 10px 8px 7px;
+	text-decoration: none;
 }
 
-.masthead h1,
-.review-header h1 {
+.dashboard-navigation a:hover {
+	border-bottom-color: var(--brand-orange);
+	color: var(--brand-red-deep);
+}
+
+.dashboard-navigation a[aria-current="page"] {
+	border-bottom-color: var(--brand-red);
+	color: var(--brand-red-deep);
+}
+
+.dashboard-account {
+	align-items: center;
+	display: flex;
+	flex-wrap: wrap;
+	gap: 12px;
+	justify-content: flex-end;
+	min-width: 0;
+}
+
+.dashboard-account span {
+	color: var(--muted);
+	font-size: 0.82rem;
+	overflow-wrap: anywhere;
+}
+
+.dashboard-account form {
+	margin: 0;
+}
+
+.content-header {
+	margin-top: 34px;
+}
+
+.content-header h1 {
 	font-size: clamp(2.35rem, 5vw, 4.25rem);
 	letter-spacing: -0.07em;
 	line-height: 0.95;
@@ -387,10 +420,14 @@ code,
 .back-link {
 	display: inline-block;
 	font-weight: 600;
-	margin-bottom: 34px;
+	margin: 34px 0;
 	text-decoration-color: var(--brand-orange);
 	text-decoration-thickness: 2px;
 	text-underline-offset: 4px;
+}
+
+.back-link + .content-header {
+	margin-top: 0;
 }
 
 .back-link:hover {
@@ -529,7 +566,12 @@ code,
 	}
 
 	.masthead {
-		flex-direction: column;
+		grid-template-columns: 1fr;
+	}
+
+	.dashboard-navigation,
+	.dashboard-account {
+		justify-content: flex-start;
 	}
 
 	.run-card {
@@ -584,22 +626,13 @@ code,
 		padding: 38px 18px 64px;
 	}
 
-	.page-title {
-		gap: 24px;
-	}
-
-	.page-title > .brand-lockup .brand-lockup-copy {
-		display: none;
-	}
-
-	.page-title > .brand-lockup img {
-		height: 38px;
-		width: 38px;
-	}
-
-	.masthead h1,
-	.review-header h1 {
+	.content-header h1 {
 		font-size: clamp(2.25rem, 13vw, 3.2rem);
+	}
+
+	.dashboard-account {
+		align-items: flex-start;
+		flex-direction: column;
 	}
 }
 
@@ -614,16 +647,11 @@ code,
 	}
 }
 
-.header-actions,
 .model-actions {
 	align-items: center;
 	display: flex;
 	flex-wrap: wrap;
 	gap: 8px;
-}
-
-.header-actions .quiet-button {
-	text-decoration: none;
 }
 
 .model-intro {
@@ -783,7 +811,157 @@ code,
 	margin-top: 28px;
 }
 
+.connection-list {
+	display: grid;
+	gap: 20px;
+	margin-top: 34px;
+}
+
+.connection-card,
+.connection-state-card {
+	background: var(--card);
+	border: 1px solid var(--line);
+	min-width: 0;
+	padding: 24px;
+}
+
+.connection-state-card {
+	margin-top: 34px;
+}
+
+.connection-state-card h1,
+.connection-state-card h2 {
+	font-size: 1.5rem;
+	margin: 0;
+}
+
+.connection-state-card > p:last-of-type {
+	color: var(--muted);
+	line-height: 1.5;
+	margin: 12px 0 0;
+}
+
+.connection-state-card .primary-button {
+	margin-top: 20px;
+}
+
+.connection-error {
+	border-left: 5px solid var(--critical);
+}
+
+.connection-card-heading,
+.repository-heading,
+.status-badges {
+	align-items: flex-start;
+	display: flex;
+	flex-wrap: wrap;
+	gap: 12px;
+}
+
+.connection-card-heading,
+.repository-heading {
+	justify-content: space-between;
+}
+
+.connection-card-heading h2 {
+	font-size: 1.55rem;
+	margin: 0;
+	overflow-wrap: anywhere;
+}
+
+.status-badges {
+	justify-content: flex-end;
+}
+
+.status-badge {
+	background: #f1edef;
+	border-left: 4px solid var(--muted);
+	color: var(--ink);
+	font-size: 0.75rem;
+	font-weight: 700;
+	padding: 7px 9px;
+}
+
+.status-badge-low {
+	background: #eaf7ee;
+	border-left-color: var(--low);
+	color: #1d6337;
+}
+
+.status-badge-medium {
+	background: #fff7db;
+	border-left-color: var(--medium);
+	color: #6b4f00;
+}
+
+.status-badge-muted {
+	border-left-color: var(--muted);
+	color: var(--muted);
+}
+
+.connection-facts,
+.repository-facts {
+	display: grid;
+	gap: 16px;
+	grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+	margin: 22px 0 0;
+}
+
+.connection-facts dt,
+.repository-facts dt {
+	color: var(--muted);
+	font-size: 0.75rem;
+}
+
+.connection-facts dd,
+.repository-facts dd {
+	font-weight: 700;
+	margin: 4px 0 0;
+	overflow-wrap: anywhere;
+}
+
+.repository-access {
+	border-top: 1px solid var(--line);
+	margin-top: 24px;
+	padding-top: 22px;
+}
+
+.repository-access h3 {
+	margin: 0 0 14px;
+}
+
+.connection-empty {
+	color: var(--muted);
+	margin: 0;
+}
+
+.repository-list {
+	display: grid;
+	gap: 10px;
+	list-style: none;
+	margin: 0;
+	padding: 0;
+}
+
+.repository-list li {
+	border: 1px solid var(--line);
+	min-width: 0;
+	padding: 16px;
+}
+
+.repository-heading strong {
+	overflow-wrap: anywhere;
+}
+
 @media (max-width: 760px) {
+	.connection-card-heading {
+		display: grid;
+	}
+
+	.status-badges {
+		justify-content: flex-start;
+	}
+
 	.model-intro {
 		grid-template-columns: 1fr;
 	}

@@ -1,8 +1,10 @@
 import { installations, repositories, type DatabaseConnection } from "@codekeat/database";
-import { and, eq } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 import { currentTimestamp } from "#shared/database";
 
 import type {
+	GitHubInstallationSummary,
+	GitHubRepositoryAccessSummary,
 	InstallationInput,
 	InstallationStatus,
 	RepositoryInput,
@@ -13,6 +15,65 @@ import type {
 
 export class GitHubAccessRepository {
 	constructor(private readonly connection: DatabaseConnection) {}
+
+	listInstallationSummaries(): readonly GitHubInstallationSummary[] {
+		const repositoriesByInstallation = new Map<number, GitHubRepositoryAccessSummary[]>();
+
+		const installationRows = this.connection.db
+			.select({
+				githubInstallationId: installations.githubInstallationId,
+				accountLogin: installations.accountLogin,
+				status: installations.status,
+				updatedAt: installations.updatedAt,
+			})
+			.from(installations)
+			.orderBy(
+				asc(installations.accountLogin),
+				desc(installations.updatedAt),
+				asc(installations.githubInstallationId),
+			)
+			.all();
+
+		const repositoryRows = this.connection.db
+			.select({
+				githubRepositoryId: repositories.githubRepositoryId,
+				installationId: repositories.installationId,
+				ownerLogin: repositories.ownerLogin,
+				name: repositories.name,
+				defaultBranch: repositories.defaultBranch,
+				status: repositories.status,
+				updatedAt: repositories.updatedAt,
+			})
+			.from(repositories)
+			.orderBy(
+				asc(repositories.ownerLogin),
+				asc(repositories.name),
+				asc(repositories.githubRepositoryId),
+			)
+			.all();
+
+		for (const row of repositoryRows) {
+			const repository = {
+				githubRepositoryId: row.githubRepositoryId,
+				fullName: `${row.ownerLogin}/${row.name}`,
+				defaultBranch: row.defaultBranch === "unknown" ? null : row.defaultBranch,
+				status: row.status,
+				updatedAt: row.updatedAt,
+			} satisfies GitHubRepositoryAccessSummary;
+			const installationRepositories = repositoriesByInstallation.get(row.installationId);
+
+			if (installationRepositories === undefined) {
+				repositoriesByInstallation.set(row.installationId, [repository]);
+				continue;
+			}
+			installationRepositories.push(repository);
+		}
+
+		return installationRows.map((installation) => ({
+			...installation,
+			repositories: repositoriesByInstallation.get(installation.githubInstallationId) ?? [],
+		}));
+	}
 
 	upsertInstallation(input: InstallationInput): void {
 		const now = currentTimestamp();

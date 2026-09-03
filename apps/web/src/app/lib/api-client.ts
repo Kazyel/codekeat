@@ -86,6 +86,24 @@ const reviewQualitySchema = z.object({
 	averageProcessingDurationMs: z.number().int().nonnegative(),
 });
 const reviewQualityResponseSchema = z.object({ quality: z.array(reviewQualitySchema) });
+const githubRepositoryConnectionSchema = z.object({
+	githubRepositoryId: z.number().int().positive(),
+	fullName: z.string(),
+	defaultBranch: z.string().nullable(),
+	status: z.enum(["active", "removed"]),
+	updatedAt: z.string(),
+});
+const githubConnectionSchema = z.object({
+	githubInstallationId: z.number().int().positive(),
+	accountLogin: z.string(),
+	status: z.enum(["active", "suspended", "deleted"]),
+	allowedByConfiguration: z.boolean(),
+	updatedAt: z.string(),
+	repositories: z.array(githubRepositoryConnectionSchema),
+});
+const githubConnectionListSchema = z.object({
+	connections: z.array(githubConnectionSchema),
+});
 const dashboardUserSchema = z.object({
 	id: z.string().uuid(),
 	email: z.string().email(),
@@ -117,6 +135,7 @@ export type DashboardFinding = z.infer<typeof findingSchema>;
 export type DashboardReviewRunSummary = z.infer<typeof reviewRunSummarySchema>;
 export type DashboardReviewRunDetail = z.infer<typeof reviewRunDetailSchema>;
 export type DashboardReviewQuality = z.infer<typeof reviewQualitySchema>;
+export type DashboardGitHubConnection = z.infer<typeof githubConnectionSchema>;
 export type DashboardUser = z.infer<typeof dashboardUserSchema>;
 export type DashboardSession = z.infer<typeof dashboardSessionSchema>;
 export type DashboardModel = z.infer<typeof modelSchema>;
@@ -167,6 +186,15 @@ export async function loadReviewQuality(): Promise<readonly DashboardReviewQuali
 		throw new Error("Codekeat review quality response is invalid.");
 	}
 	return parsed.data.quality;
+}
+
+export async function loadGitHubConnections(): Promise<readonly DashboardGitHubConnection[]> {
+	const response = await requestCodekeat("/api/v1/github/connections");
+	const parsed = githubConnectionListSchema.safeParse(await response.json());
+	if (!parsed.success) {
+		throw new Error("Codekeat GitHub connections response is invalid.");
+	}
+	return parsed.data.connections;
 }
 export async function loadModels(sessionToken: string): Promise<readonly DashboardModel[]> {
 	const response = await requestCodekeat("/api/v1/models", { sessionToken });

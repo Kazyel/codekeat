@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import type { ReactNode } from "react";
-import { BrandLockup } from "../brand-lockup";
 
 import { type DashboardReviewQuality, loadReviewQuality, loadReviewRuns } from "../lib/api-client";
 import { readSession } from "../lib/session";
@@ -15,25 +14,10 @@ export default async function DashboardPage(): Promise<ReactNode> {
 
 	const [reviewRuns, quality] = await Promise.all([loadReviewRuns(), loadReviewQuality()]);
 	return (
-		<main className="shell">
-			<header className="masthead">
-				<div className="page-title">
-					<BrandLockup />
-					<div>
-						<p className="eyebrow">Ledger de revisão</p>
-						<h1>Pull requests analisados</h1>
-					</div>
-				</div>
-				<div className="header-actions">
-					<Link className="quiet-button" href="/dashboard/models">
-						Modelos
-					</Link>
-					<form action="/logout" method="post">
-						<button className="quiet-button" type="submit">
-							Sair de {session.email}
-						</button>
-					</form>
-				</div>
+		<>
+			<header className="content-header">
+				<p className="eyebrow">Ledger de revisão</p>
+				<h1>Pull requests analisados</h1>
 			</header>
 
 			<QualitySummary quality={quality} />
@@ -69,7 +53,7 @@ export default async function DashboardPage(): Promise<ReactNode> {
 					))
 				)}
 			</section>
-		</main>
+		</>
 	);
 }
 

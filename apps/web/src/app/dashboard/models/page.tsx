@@ -1,8 +1,6 @@
-import Link from "next/link";
 import { redirect } from "next/navigation";
 import type { ReactNode } from "react";
 
-import { BrandLockup } from "../../brand-lockup";
 import { type DashboardModel, loadModels } from "../../lib/api-client";
 import { readSession, readSessionToken } from "../../lib/session";
 import {
@@ -37,25 +35,10 @@ export default async function ModelsPage({
 	const canManage = session.role === "admin";
 
 	return (
-		<main className="shell">
-			<header className="masthead">
-				<div className="page-title">
-					<BrandLockup />
-					<div>
-						<p className="eyebrow">Configuração global</p>
-						<h1>Modelos de review</h1>
-					</div>
-				</div>
-				<div className="header-actions">
-					<Link className="quiet-button" href="/dashboard">
-						Reviews
-					</Link>
-					<form action="/logout" method="post">
-						<button className="quiet-button" type="submit">
-							Sair
-						</button>
-					</form>
-				</div>
+		<>
+			<header className="content-header">
+				<p className="eyebrow">Configuração global</p>
+				<h1>Modelos de review</h1>
 			</header>
 
 			<section className="model-intro" aria-labelledby="catalog-title">
@@ -124,7 +107,7 @@ export default async function ModelsPage({
 					</form>
 				</section>
 			) : null}
-		</main>
+		</>
 	);
 }
 
