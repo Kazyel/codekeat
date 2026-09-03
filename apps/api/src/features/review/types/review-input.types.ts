@@ -1,4 +1,4 @@
-import type { ReviewModelConfiguration } from "../../modelos/index.js";
+import type { ReviewModelConfiguration } from "../../models/index.js";
 import type { ReviewRunErrorCode, RunnableReviewRun } from "./review-repository.types.js";
 import type { ReviewFinding } from "./review-run.types.js";
 

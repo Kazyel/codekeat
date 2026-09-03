@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import type { ModelCatalogRepository } from "../../modelos/index.js";
+import type { ModelCatalogRepository } from "../../models/index.js";
 import type { ResolvedRepositoryPolicy } from "#features/repository-policy";
 import type { ReviewReportRepository } from "../repositories/review-report.repository.js";
 import type { ReviewRunRepository } from "../repositories/review-run.repository.js";

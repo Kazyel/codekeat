@@ -19,7 +19,7 @@ import {
 	registerGitHubWebhookController,
 	WebhookDeliveryRepository,
 } from "#features/github";
-import { createModelCatalogController, ModelCatalogRepository } from "../features/modelos/index.js";
+import { createModelCatalogController, ModelCatalogRepository } from "../features/models/index.js";
 import { GeminiReviewService } from "#integrations/gemini";
 import {
 	createReviewReadController,

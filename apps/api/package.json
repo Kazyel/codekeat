@@ -9,7 +9,7 @@
 	"imports": {
 		"#features/auth": "./dist/features/auth/index.js",
 		"#features/github": "./dist/features/github/index.js",
-		"#features/models": "./dist/features/modelos/index.js",
+		"#features/models": "./dist/features/models/index.js",
 		"#features/repository-policy": "./dist/features/repository-policy/index.js",
 		"#features/review": "./dist/features/review/index.js",
 		"#core/workflows/*": "./dist/core/workflows/*.js",

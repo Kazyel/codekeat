@@ -6,7 +6,7 @@ import {
 	ReviewRunRepository,
 	type ReviewWorkQueue,
 } from "#features/review";
-import type { ModelCatalogRepository } from "../../features/modelos/index.js";
+import type { ModelCatalogRepository } from "../../features/models/index.js";
 import {
 	GitHubAccessRepository,
 	GitHubRepositoryPolicyService,

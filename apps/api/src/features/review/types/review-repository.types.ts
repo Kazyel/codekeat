@@ -1,4 +1,4 @@
-import type { ReviewModelConfiguration } from "../../modelos/index.js";
+import type { ReviewModelConfiguration } from "../../models/index.js";
 import type { PolicySource } from "#features/repository-policy";
 import type { ReviewTokenUsage } from "./review-input.types.js";
 import type {
