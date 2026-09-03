@@ -1,6 +1,6 @@
 import { findings, reviewRuns } from "@codekeat/database";
-import pino from "pino";
-import { describe, expect, it } from "vitest";
+import pino, { type Logger } from "pino";
+import { describe, expect, it, vi } from "vitest";
 import type { ReviewModelConfiguration } from "#features/models";
 
 import {
@@ -76,7 +76,7 @@ class RecordedModel implements ReviewModel {
 
 class FailingModel implements ReviewModel {
 	async review(): Promise<never> {
-		throw new ReviewModelResponseError();
+		throw new ReviewModelResponseError("schema_invalid");
 	}
 }
 
@@ -262,11 +262,14 @@ describe("ReviewRunProcessorService", () => {
 	it("fails closed when the judge response does not cover every candidate", async () => {
 		const database = createReviewRun();
 		const judge = new RecordedJudge(() => ({ judgments: [], usage: JUDGE_USAGE }));
+		const logger = pino({ level: "silent" });
+		const warn = vi.spyOn(logger, "warn");
 		const processor = createProcessor(
 			database,
 			new ReadyInputSource(ONE_CHUNK_INPUT),
 			new RecordedModel([[VALID_FINDING]]),
 			judge,
+			logger,
 		);
 
 		await processor.process(REVIEW_RUN_ID);
@@ -276,6 +279,16 @@ describe("ReviewRunProcessorService", () => {
 			errorCode: "gemini_judge_invalid_response",
 		});
 		expect(database.connection.db.select().from(findings).all()).toEqual([]);
+		expect(warn).toHaveBeenCalledWith(
+			{
+				candidateCount: 1,
+				judgmentCount: 0,
+				modelName: "gemini-3.8-flash",
+				reason: "coverage_mismatch",
+				reviewRunId: REVIEW_RUN_ID,
+			},
+			"gemini_judge.invalid_response",
+		);
 		database.close();
 	});
 
@@ -299,8 +312,43 @@ describe("ReviewRunProcessorService", () => {
 		database.close();
 	});
 
+	it("logs a sanitized judge schema failure reason", async () => {
+		const database = createReviewRun();
+		const logger = pino({ level: "silent" });
+		const warn = vi.spyOn(logger, "warn");
+		const judge = new RecordedJudge(() =>
+			Promise.reject(new ReviewModelResponseError("schema_invalid")),
+		);
+		const processor = createProcessor(
+			database,
+			new ReadyInputSource(ONE_CHUNK_INPUT),
+			new RecordedModel([[VALID_FINDING]]),
+			judge,
+			logger,
+		);
+
+		await processor.process(REVIEW_RUN_ID);
+
+		expect(readRun(database)).toMatchObject({
+			status: "failed",
+			errorCode: "gemini_judge_invalid_response",
+		});
+		expect(warn).toHaveBeenCalledWith(
+			{
+				candidateCount: 1,
+				modelName: "gemini-3.8-flash",
+				reason: "schema_invalid",
+				reviewRunId: REVIEW_RUN_ID,
+			},
+			"gemini_judge.invalid_response",
+		);
+		database.close();
+	});
+
 	it("rejects a severity change that keeps the original severity", async () => {
 		const database = createReviewRun();
+		const logger = pino({ level: "silent" });
+		const warn = vi.spyOn(logger, "warn");
 		const judge = new RecordedJudge((batch) =>
 			judgeAll(batch, {
 				kind: "severity_changed",
@@ -313,6 +361,7 @@ describe("ReviewRunProcessorService", () => {
 			new ReadyInputSource(ONE_CHUNK_INPUT),
 			new RecordedModel([[VALID_FINDING]]),
 			judge,
+			logger,
 		);
 
 		await processor.process(REVIEW_RUN_ID);
@@ -321,6 +370,16 @@ describe("ReviewRunProcessorService", () => {
 			status: "failed",
 			errorCode: "gemini_judge_invalid_response",
 		});
+		expect(warn).toHaveBeenCalledWith(
+			{
+				candidateCount: 1,
+				judgmentCount: 1,
+				modelName: "gemini-3.8-flash",
+				reason: "unchanged_severity",
+				reviewRunId: REVIEW_RUN_ID,
+			},
+			"gemini_judge.invalid_response",
+		);
 		database.close();
 	});
 
@@ -402,6 +461,7 @@ function createProcessor(
 	inputSource: ReviewInputSource,
 	model: ReviewModel,
 	judge: ReviewFindingJudge,
+	logger: Logger = LOGGER,
 ): ReviewRunProcessorService {
 	return new ReviewRunProcessorService(
 		database.reviewRunRepository,
@@ -409,7 +469,7 @@ function createProcessor(
 		model,
 		judge,
 		new RecordedQueue(),
-		LOGGER,
+		logger,
 	);
 }
 

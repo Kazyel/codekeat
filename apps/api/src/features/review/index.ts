@@ -3,7 +3,10 @@ export {
 	createReviewQualityController,
 	createReviewUsageController,
 } from "./controllers/review-read.controller.js";
-export { ReviewModelResponseError } from "./errors/review-model.error.js";
+export {
+	ReviewModelResponseError,
+	type ReviewModelResponseIssue,
+} from "./errors/review-model.error.js";
 export { ReviewQueryRepository } from "./repositories/review-query.repository.js";
 export { ReviewReportRepository } from "./repositories/review-report.repository.js";
 export { ReviewRunRepository } from "./repositories/review-run.repository.js";

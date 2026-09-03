@@ -106,22 +106,42 @@ const JUDGE_RESPONSE_JSON_SCHEMA = {
 		judgments: {
 			type: "array",
 			items: {
-				type: "object",
-				properties: {
-					index: { type: "integer" },
-					kind: {
-						type: "string",
-						enum: ["approved", "rejected", "severity_changed"],
+				anyOf: [
+					{
+						type: "object",
+						properties: {
+							index: { type: "integer", minimum: 0 },
+							kind: { type: "string", enum: ["approved"] },
+							rationale: { type: "string" },
+						},
+						required: ["index", "kind", "rationale"],
+						additionalProperties: false,
 					},
-					severity: {
-						type: "string",
-						enum: ["critical", "high", "medium", "low"],
-						nullable: true,
+					{
+						type: "object",
+						properties: {
+							index: { type: "integer", minimum: 0 },
+							kind: { type: "string", enum: ["rejected"] },
+							rationale: { type: "string" },
+						},
+						required: ["index", "kind", "rationale"],
+						additionalProperties: false,
 					},
-					rationale: { type: "string" },
-				},
-				required: ["index", "kind", "rationale"],
-				additionalProperties: false,
+					{
+						type: "object",
+						properties: {
+							index: { type: "integer", minimum: 0 },
+							kind: { type: "string", enum: ["severity_changed"] },
+							severity: {
+								type: "string",
+								enum: ["critical", "high", "medium", "low"],
+							},
+							rationale: { type: "string" },
+						},
+						required: ["index", "kind", "severity", "rationale"],
+						additionalProperties: false,
+					},
+				],
 			},
 		},
 	},
@@ -228,7 +248,7 @@ export class GeminiReviewService implements ReviewModel, ReviewFindingJudge {
 function parseGeminiTokenUsage(value: unknown, model: ReviewModelConfiguration): ReviewTokenUsage {
 	const parsed = USAGE_METADATA_SCHEMA.safeParse(value);
 	if (!parsed.success) {
-		throw new ReviewModelResponseError();
+		throw new ReviewModelResponseError("usage_metadata_invalid");
 	}
 
 	const cacheTokens = parsed.data.cachedContentTokenCount;
@@ -288,6 +308,7 @@ function createJudgePrompt(input: ReviewInput, batch: ReviewFindingJudgeInput): 
 		"Aprove apenas defeitos com cenário alcançável, mecanismo exato de falha e impacto observável.",
 		"Rejeite estilo, especulação, duplicatas e alegações sem evidência no diff.",
 		"Use severity_changed somente quando a severidade correta for diferente da original.",
+		"Em approved ou rejected, não inclua severity. Em severity_changed, retorne obrigatoriamente a nova severity.",
 		"Calibre: critical para exploração, segredos ou perda ampla de dados; high para falha provável grave; medium para comportamento incorreto determinístico localizado; low para risco concreto menor.",
 		"Não crie paths, linhas ou candidatos. Retorne exatamente um julgamento para cada index recebido.",
 		`Repositório: ${input.repositoryFullName}`,
@@ -299,40 +320,35 @@ function createJudgePrompt(input: ReviewInput, batch: ReviewFindingJudgeInput): 
 }
 
 export function parseGeminiReviewResponse(text: string | undefined): readonly ReviewFinding[] {
-	if (text === undefined) {
-		throw new ReviewModelResponseError();
+	const result = REVIEW_RESPONSE_SCHEMA.safeParse(parseResponseJson(text));
+	if (!result.success) {
+		throw new ReviewModelResponseError("schema_invalid");
 	}
-
-	try {
-		const result = REVIEW_RESPONSE_SCHEMA.safeParse(JSON.parse(text));
-		if (result.success) {
-			return result.data.findings;
-		}
-	} catch {
-		throw new ReviewModelResponseError();
-	}
-
-	throw new ReviewModelResponseError();
+	return result.data.findings;
 }
 
 export function parseGeminiJudgeResponse(
 	text: string | undefined,
 ): readonly ReviewFindingJudgment[] {
+	const result = JUDGE_RESPONSE_SCHEMA.safeParse(parseResponseJson(text));
+	if (!result.success) {
+		throw new ReviewModelResponseError("schema_invalid");
+	}
+
+	return result.data.judgments.map(({ index, ...judgment }) => ({
+		index,
+		judgment,
+	}));
+}
+
+function parseResponseJson(text: string | undefined): unknown {
 	if (text === undefined) {
-		throw new ReviewModelResponseError();
+		throw new ReviewModelResponseError("missing_text");
 	}
 
 	try {
-		const result = JUDGE_RESPONSE_SCHEMA.safeParse(JSON.parse(text));
-		if (result.success) {
-			return result.data.judgments.map(({ index, ...judgment }) => ({
-				index,
-				judgment,
-			}));
-		}
+		return JSON.parse(text);
 	} catch {
-		throw new ReviewModelResponseError();
+		throw new ReviewModelResponseError("invalid_json");
 	}
-
-	throw new ReviewModelResponseError();
 }
