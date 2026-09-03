@@ -27,6 +27,7 @@ describe("requestReview", () => {
 
 		const result = await requestReview(REVIEW_REQUEST, ENABLED_POLICY, {
 			runRepository: database.reviewRunRepository,
+			modelRepository: database.modelCatalogRepository,
 			reportRepository: database.reviewReportRepository,
 			queue,
 		});
@@ -35,6 +36,13 @@ describe("requestReview", () => {
 		expect(result.kind).toBe("queued");
 		expect(runs).toHaveLength(1);
 		expect(runs[0]?.status).toBe("queued");
+		expect(runs[0]).toMatchObject({
+			modelId: database.selectedModel.id,
+			modelName: database.selectedModel.apiName,
+			modelInputNanoUsdPerToken: database.selectedModel.inputNanoUsdPerToken,
+			modelCachedInputNanoUsdPerToken: database.selectedModel.cachedInputNanoUsdPerToken,
+			modelOutputNanoUsdPerToken: database.selectedModel.outputNanoUsdPerToken,
+		});
 		expect(queue.reviewRunIds).toEqual([runs[0]?.id]);
 		database.close();
 	});
@@ -46,6 +54,7 @@ describe("requestReview", () => {
 
 		const result = await requestReview(REVIEW_REQUEST, DISABLED_POLICY, {
 			runRepository: database.reviewRunRepository,
+			modelRepository: database.modelCatalogRepository,
 			reportRepository: database.reviewReportRepository,
 			queue,
 		});
@@ -64,6 +73,7 @@ describe("requestReview", () => {
 		const queue = new RecordedQueue();
 		const dependencies = {
 			runRepository: database.reviewRunRepository,
+			modelRepository: database.modelCatalogRepository,
 			reportRepository: database.reviewReportRepository,
 			queue,
 		};
@@ -87,6 +97,7 @@ describe("requestReview", () => {
 		const queue = new RecordedQueue();
 		const dependencies = {
 			runRepository: database.reviewRunRepository,
+			modelRepository: database.modelCatalogRepository,
 			reportRepository: database.reviewReportRepository,
 			queue,
 		};
@@ -109,6 +120,7 @@ describe("requestReview", () => {
 
 		await requestReview(REVIEW_REQUEST, INVALID_POLICY_FALLBACK, {
 			runRepository: database.reviewRunRepository,
+			modelRepository: database.modelCatalogRepository,
 			reportRepository: database.reviewReportRepository,
 			queue: new RecordedQueue(),
 		});
@@ -134,13 +146,22 @@ describe("requestReview", () => {
 			policySource: "default",
 			policyWarningCode: null,
 			ignoreReason: null,
+			model: database.selectedModel,
 		});
+		const replacement = database.modelCatalogRepository
+			.listModels()
+			.find((model) => model.apiName === "gemini-3.7-flash");
+		if (replacement === undefined) {
+			throw new Error("Replacement model fixture is missing.");
+		}
+		database.modelCatalogRepository.selectModel(replacement.id);
 
 		const result = await requestReview(
 			{ ...REVIEW_REQUEST, trigger: "reopened" },
 			ENABLED_POLICY,
 			{
 				runRepository: database.reviewRunRepository,
+				modelRepository: database.modelCatalogRepository,
 				reportRepository: database.reviewReportRepository,
 				queue,
 			},
@@ -149,6 +170,9 @@ describe("requestReview", () => {
 		expect(result.kind).toBe("queued");
 		expect(queue.reviewRunIds).toEqual(["failed-run"]);
 		expect(database.connection.db.select().from(reviewRuns).get()?.status).toBe("queued");
+		expect(database.connection.db.select().from(reviewRuns).get()?.modelName).toBe(
+			"gemini-3.8-flash",
+		);
 		database.close();
 	});
 
@@ -167,10 +191,11 @@ describe("requestReview", () => {
 			policySource: "default",
 			policyWarningCode: null,
 			ignoreReason: null,
+			model: database.selectedModel,
 		});
 		database.reviewRunRepository.completeReviewRun(
 			"completed-run",
-			"test-model",
+			{ inputTokens: 1, outputTokens: 1, cacheTokens: 0, costUsdMicros: 1 },
 			[],
 			"report-1",
 		);
@@ -180,6 +205,7 @@ describe("requestReview", () => {
 			ENABLED_POLICY,
 			{
 				runRepository: database.reviewRunRepository,
+				modelRepository: database.modelCatalogRepository,
 				reportRepository: database.reviewReportRepository,
 				queue,
 			},

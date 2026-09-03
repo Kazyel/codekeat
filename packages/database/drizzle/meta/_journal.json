@@ -36,6 +36,27 @@
       "when": 1786475877529,
       "tag": "0004_panoramic_mandrill",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1788391769605,
+      "tag": "0005_optimal_whizzer",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1788437671402,
+      "tag": "0006_parched_daredevil",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1788437672412,
+      "tag": "0007_seed-models",
+      "breakpoints": true
     }
   ]
 }

@@ -2,15 +2,19 @@ import { type CallableTool, type GenerateContentConfig, GoogleGenAI } from "@goo
 import type { Logger } from "pino";
 import { z } from "zod";
 import { TakeatMcpUnavailableError } from "#integrations/takeat-mcp";
+import type { ReviewModelConfiguration } from "#features/models";
 import {
 	type ReviewFinding,
 	type ReviewInput,
 	type ReviewInputChunk,
 	ReviewModelResponseError,
 	type ReviewModel,
+	type ReviewModelResult,
+	type ReviewTokenUsage,
 } from "#features/review";
 
 import { MAXIMUM_REMOTE_MCP_CALLS } from "../constants/gemini.constants.js";
+
 const REVIEW_RESPONSE_SCHEMA = z
 	.object({
 		findings: z.array(
@@ -26,6 +30,18 @@ const REVIEW_RESPONSE_SCHEMA = z
 		),
 	})
 	.strict();
+
+const TOKEN_COUNT_SCHEMA = z.number().int().nonnegative();
+const USAGE_METADATA_SCHEMA = z
+	.object({
+		promptTokenCount: TOKEN_COUNT_SCHEMA,
+		cachedContentTokenCount: TOKEN_COUNT_SCHEMA.optional().default(0),
+		candidatesTokenCount: TOKEN_COUNT_SCHEMA.optional().default(0),
+		thoughtsTokenCount: TOKEN_COUNT_SCHEMA.optional().default(0),
+		toolUsePromptTokenCount: TOKEN_COUNT_SCHEMA.optional().default(0),
+	})
+	.passthrough()
+	.refine((usage) => usage.cachedContentTokenCount <= usage.promptTokenCount);
 
 const RESPONSE_JSON_SCHEMA = {
 	type: "object",
@@ -55,18 +71,21 @@ export class GeminiReviewService implements ReviewModel {
 
 	constructor(
 		apiKey: string,
-		readonly name: string,
 		private readonly takeatMcpTool: CallableTool,
 		private readonly logger: Logger,
 	) {
 		this.client = new GoogleGenAI({ apiKey });
 	}
 
-	async review(input: ReviewInput, chunk: ReviewInputChunk): Promise<readonly ReviewFinding[]> {
+	async review(
+		model: ReviewModelConfiguration,
+		input: ReviewInput,
+		chunk: ReviewInputChunk,
+	): Promise<ReviewModelResult> {
 		const prompt = createPrompt(input, chunk);
 
 		try {
-			return await this.generateReview(prompt, this.takeatMcpTool);
+			return await this.generateReview(model, prompt, this.takeatMcpTool);
 		} catch (error) {
 			if (!(error instanceof TakeatMcpUnavailableError)) {
 				throw error;
@@ -82,13 +101,14 @@ export class GeminiReviewService implements ReviewModel {
 			"takeat_mcp.unavailable_using_diff_only",
 		);
 
-		return this.generateReview(prompt, null);
+		return this.generateReview(model, prompt, null);
 	}
 
 	private async generateReview(
+		model: ReviewModelConfiguration,
 		prompt: string,
 		takeatMcpTool: CallableTool | null,
-	): Promise<readonly ReviewFinding[]> {
+	): Promise<ReviewModelResult> {
 		const config: GenerateContentConfig = {
 			responseMimeType: "application/json",
 			responseJsonSchema: RESPONSE_JSON_SCHEMA,
@@ -102,13 +122,35 @@ export class GeminiReviewService implements ReviewModel {
 		}
 
 		const response = await this.client.models.generateContent({
-			model: this.name,
+			model: model.apiName,
 			contents: prompt,
 			config,
 		});
 
-		return parseGeminiReviewResponse(response.text);
+		return {
+			findings: parseGeminiReviewResponse(response.text),
+			usage: parseGeminiTokenUsage(response.usageMetadata, model),
+		};
 	}
+}
+
+function parseGeminiTokenUsage(value: unknown, model: ReviewModelConfiguration): ReviewTokenUsage {
+	const parsed = USAGE_METADATA_SCHEMA.safeParse(value);
+	if (!parsed.success) {
+		throw new ReviewModelResponseError();
+	}
+
+	const cacheTokens = parsed.data.cachedContentTokenCount;
+	const inputTokens = parsed.data.promptTokenCount + parsed.data.toolUsePromptTokenCount;
+	const outputTokens = parsed.data.candidatesTokenCount + parsed.data.thoughtsTokenCount;
+	const nonCachedInputTokens = inputTokens - cacheTokens;
+	const costUsdMicros =
+		(nonCachedInputTokens * model.inputNanoUsdPerToken +
+			cacheTokens * model.cachedInputNanoUsdPerToken +
+			outputTokens * model.outputNanoUsdPerToken) /
+		1_000;
+
+	return { inputTokens, outputTokens, cacheTokens, costUsdMicros };
 }
 
 function createPrompt(input: ReviewInput, chunk: ReviewInputChunk): string {

@@ -19,9 +19,11 @@ import {
 	registerGitHubWebhookController,
 	WebhookDeliveryRepository,
 } from "#features/github";
+import { createModelCatalogController, ModelCatalogRepository } from "../features/modelos/index.js";
 import { GeminiReviewService } from "#integrations/gemini";
 import {
 	createReviewReadController,
+	createReviewUsageController,
 	ReviewQueryRepository,
 	ReviewQueueService,
 	ReviewReportPublisherService,
@@ -38,19 +40,20 @@ export async function configureApplication(
 	environment: ApplicationEnvironment,
 	options: ApplicationFunctionOptions,
 ): Promise<DatabaseConnection> {
-	const connection = createDatabaseConnection(environment.databasePath);
+	const db = createDatabaseConnection(environment.databasePath);
 	try {
-		migrateDatabase(connection);
+		migrateDatabase(db);
 
 		/*
 			Repositories persistindo os dados do dashboard, GitHub e revisão.
 		*/
-		const authRepository = new DashboardAuthRepository(connection);
-		const githubAccessRepository = new GitHubAccessRepository(connection);
-		const webhookDeliveryRepository = new WebhookDeliveryRepository(connection);
-		const reviewReportRepository = new ReviewReportRepository(connection);
-		const reviewRunRepository = new ReviewRunRepository(connection, reviewReportRepository);
-		const reviewQueryRepository = new ReviewQueryRepository(connection);
+		const authRepository = new DashboardAuthRepository(db);
+		const githubAccessRepository = new GitHubAccessRepository(db);
+		const modelCatalogRepository = new ModelCatalogRepository(db);
+		const webhookDeliveryRepository = new WebhookDeliveryRepository(db);
+		const reviewReportRepository = new ReviewReportRepository(db);
+		const reviewRunRepository = new ReviewRunRepository(db, reviewReportRepository);
+		const reviewQueryRepository = new ReviewQueryRepository(db);
 
 		/*
 			Autenticação e provisionamento do administrador inicial.
@@ -71,11 +74,12 @@ export async function configureApplication(
 			environment.takeatMcpTokenUrl,
 			environment.takeatMcpClientId,
 			environment.takeatMcpClientSecret,
+			app.log,
 		);
+
 		const model = new GeminiReviewService(
 			environment.googleApiKey,
-			environment.geminiModel,
-			new TakeatMcpTool(environment.takeatMcpUrl, takeatMcpAccessTokenService),
+			new TakeatMcpTool(environment.takeatMcpUrl, takeatMcpAccessTokenService, app.log),
 			app.log,
 		);
 
@@ -87,6 +91,7 @@ export async function configureApplication(
 			new GitHubReviewPublicationService(app),
 			app.log,
 		);
+
 		let processor: ReviewRunProcessorService;
 		const reviewTask: ReviewRunProcessorTask = {
 			async process(reviewRunId: string): Promise<void> {
@@ -121,23 +126,34 @@ export async function configureApplication(
 					policyService,
 					queue,
 					reportRepository: reviewReportRepository,
+					modelRepository: modelCatalogRepository,
 					runRepository: reviewRunRepository,
 				}),
 		});
 
 		/*
-			API de leitura de revisões e autenticação do dashboard.
+			Endpoints de leitura de revisões, uso de tokens, modelos e autenticação do dashboard.
 		*/
 		options.addHandler(
 			createReviewReadController(reviewQueryRepository, environment.dashboardApiToken),
 		);
 		options.addHandler(
+			createReviewUsageController(reviewQueryRepository, environment.dashboardApiToken),
+		);
+		options.addHandler(
+			createModelCatalogController(
+				modelCatalogRepository,
+				dashboardAuthenticator,
+				environment.dashboardApiToken,
+			),
+		);
+		options.addHandler(
 			createDashboardAuthController(dashboardAuthenticator, environment.dashboardApiToken),
 		);
 
-		return connection;
+		return db;
 	} catch (error) {
-		connection.close();
+		db.close();
 		throw error;
 	}
 }

@@ -28,7 +28,6 @@ export class GitHubRepositoryPolicyService {
 			if (isNotFound(error)) {
 				return defaultRepositoryPolicy();
 			}
-
 			throw error;
 		}
 	}

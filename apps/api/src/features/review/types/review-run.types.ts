@@ -1,4 +1,6 @@
 import type { ResolvedRepositoryPolicy } from "#features/repository-policy";
+import type { ReviewTokenUsage } from "./review-input.types.js";
+import type { ReviewRunErrorCode } from "./review-repository.types.js";
 
 export type ReviewTrigger = "opened" | "reopened" | "ready_for_review" | "synchronize";
 
@@ -45,3 +47,11 @@ export interface ReviewRequestResult {
 	readonly kind: "queued" | "ignored" | "duplicate" | "report_queued";
 	readonly policy: ResolvedRepositoryPolicy | null;
 }
+
+export type ReviewResult =
+	| {
+			readonly kind: "completed";
+			readonly findings: readonly ReviewFinding[];
+			readonly usage: ReviewTokenUsage;
+	  }
+	| { readonly kind: "failed"; readonly errorCode: ReviewRunErrorCode };

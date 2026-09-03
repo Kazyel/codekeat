@@ -1,3 +1,4 @@
+import type { ReviewModelConfiguration } from "../../modelos/index.js";
 import type { ReviewRunErrorCode, RunnableReviewRun } from "./review-repository.types.js";
 import type { ReviewFinding } from "./review-run.types.js";
 
@@ -17,6 +18,17 @@ export interface ReviewInput {
 	readonly reviewRunId: string;
 	readonly title: string;
 }
+export interface ReviewTokenUsage {
+	readonly inputTokens: number;
+	readonly outputTokens: number;
+	readonly cacheTokens: number;
+	readonly costUsdMicros: number;
+}
+
+export interface ReviewModelResult {
+	readonly findings: readonly ReviewFinding[];
+	readonly usage: ReviewTokenUsage;
+}
 
 export type ReviewInputLoadResult =
 	| { readonly kind: "failed"; readonly errorCode: ReviewRunErrorCode }
@@ -28,6 +40,9 @@ export interface ReviewInputSource {
 }
 
 export interface ReviewModel {
-	readonly name: string;
-	review(input: ReviewInput, chunk: ReviewInputChunk): Promise<readonly ReviewFinding[]>;
+	review(
+		model: ReviewModelConfiguration,
+		input: ReviewInput,
+		chunk: ReviewInputChunk,
+	): Promise<ReviewModelResult>;
 }

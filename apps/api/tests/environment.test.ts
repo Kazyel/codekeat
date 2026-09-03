@@ -9,7 +9,6 @@ const VALID_ENVIRONMENT = {
 	DATABASE_PATH: ":memory:",
 	ALLOWED_GITHUB_ACCOUNTS: "Takeat, mateusmascarelo ",
 	GOOGLE_API_KEY: "google-api-key",
-	GEMINI_MODEL: "gemini-3.6-flash",
 	TAKEAT_MCP_URL: "https://mcp.takeat.example/mcp",
 	TAKEAT_MCP_TOKEN_URL: "https://mcp.takeat.example/oauth/token",
 	TAKEAT_MCP_CLIENT_ID: "codekeat",
@@ -49,12 +48,12 @@ describe("loadEnvironment", () => {
 		).toThrow("PRIVATE_KEY");
 	});
 
-	it("requires Gemini credentials and model selection", () => {
+	it("requires only the Gemini API credential from the environment", () => {
 		expect(() => loadEnvironment({ ...VALID_ENVIRONMENT, GOOGLE_API_KEY: "" })).toThrow(
 			"GOOGLE_API_KEY",
 		);
-		expect(() => loadEnvironment({ ...VALID_ENVIRONMENT, GEMINI_MODEL: "" })).toThrow(
-			"GEMINI_MODEL",
+		expect(loadEnvironment({ ...VALID_ENVIRONMENT, GEMINI_MODEL: "" })).not.toHaveProperty(
+			"geminiModel",
 		);
 	});
 

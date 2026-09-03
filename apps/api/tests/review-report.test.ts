@@ -120,10 +120,11 @@ function createCompletedReview(reviewFindings: readonly (typeof FINDING)[]) {
 		policySource: "default",
 		policyWarningCode: null,
 		ignoreReason: null,
+		model: database.selectedModel,
 	});
 	database.reviewRunRepository.completeReviewRun(
 		REVIEW_RUN_ID,
-		"test-model",
+		{ inputTokens: 1, outputTokens: 1, cacheTokens: 0, costUsdMicros: 1 },
 		reviewFindings.map((currentFinding, index) => ({
 			...currentFinding,
 			id: `finding-${index}`,

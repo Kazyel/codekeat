@@ -28,7 +28,6 @@ const ENVIRONMENT_SCHEMA = z
 		DATABASE_PATH: z.string().trim().min(1),
 		ALLOWED_GITHUB_ACCOUNTS: z.string().transform(parseAllowedAccounts),
 		GOOGLE_API_KEY: z.string().trim().min(1),
-		GEMINI_MODEL: z.string().trim().min(1),
 		TAKEAT_MCP_URL: HTTPS_URL,
 		TAKEAT_MCP_TOKEN_URL: HTTPS_URL,
 		TAKEAT_MCP_CLIENT_ID: z.string().trim().min(1),
@@ -50,7 +49,6 @@ export interface ApplicationEnvironment {
 	readonly databasePath: string;
 	readonly allowedGithubAccounts: ReadonlySet<string>;
 	readonly googleApiKey: string;
-	readonly geminiModel: string;
 	readonly takeatMcpUrl: URL;
 	readonly takeatMcpTokenUrl: URL;
 	readonly takeatMcpClientId: string;
@@ -67,7 +65,6 @@ export function loadEnvironment(values: NodeJS.ProcessEnv): ApplicationEnvironme
 		databasePath: parsed.DATABASE_PATH,
 		allowedGithubAccounts: new Set(parsed.ALLOWED_GITHUB_ACCOUNTS),
 		googleApiKey: parsed.GOOGLE_API_KEY,
-		geminiModel: parsed.GEMINI_MODEL,
 		takeatMcpUrl: new URL(parsed.TAKEAT_MCP_URL),
 		takeatMcpTokenUrl: new URL(parsed.TAKEAT_MCP_TOKEN_URL),
 		takeatMcpClientId: parsed.TAKEAT_MCP_CLIENT_ID,

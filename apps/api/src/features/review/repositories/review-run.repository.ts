@@ -1,6 +1,7 @@
 import { findings, repositories, reviewRuns, type DatabaseConnection } from "@codekeat/database";
 import { and, eq, sql } from "drizzle-orm";
 import { currentTimestamp } from "#shared/database";
+import type { ReviewTokenUsage } from "../types/review-input.types.js";
 
 import type {
 	ExistingReviewRun,
@@ -20,12 +21,21 @@ export class ReviewRunRepository {
 
 	createReviewRun(input: ReviewRunInput): "created" | "duplicate" {
 		const now = currentTimestamp();
+		const { model, ...run } = input;
 		const result = this.connection.db
 			.insert(reviewRuns)
 			.values({
-				...input,
+				...run,
 				errorCode: null,
-				modelName: null,
+				modelId: model.id,
+				modelName: model.apiName,
+				modelInputNanoUsdPerToken: model.inputNanoUsdPerToken,
+				modelCachedInputNanoUsdPerToken: model.cachedInputNanoUsdPerToken,
+				modelOutputNanoUsdPerToken: model.outputNanoUsdPerToken,
+				inputTokens: null,
+				outputTokens: null,
+				cacheTokens: null,
+				costUsdMicros: null,
 				createdAt: now,
 				startedAt: null,
 				completedAt: null,
@@ -71,7 +81,10 @@ export class ReviewRunRepository {
 				status: "queued",
 				errorCode: null,
 				ignoreReason: null,
-				modelName: null,
+				inputTokens: null,
+				outputTokens: null,
+				cacheTokens: null,
+				costUsdMicros: null,
 				startedAt: null,
 				completedAt: null,
 				updatedAt: currentTimestamp(),
@@ -108,6 +121,11 @@ export class ReviewRunRepository {
 				repositoryFullName: sql<string>`${repositories.ownerLogin} || '/' || ${repositories.name}`,
 				pullRequestNumber: reviewRuns.pullRequestNumber,
 				headSha: reviewRuns.headSha,
+				modelId: reviewRuns.modelId,
+				modelName: reviewRuns.modelName,
+				modelInputNanoUsdPerToken: reviewRuns.modelInputNanoUsdPerToken,
+				modelCachedInputNanoUsdPerToken: reviewRuns.modelCachedInputNanoUsdPerToken,
+				modelOutputNanoUsdPerToken: reviewRuns.modelOutputNanoUsdPerToken,
 			})
 			.from(reviewRuns)
 			.innerJoin(
@@ -118,15 +136,32 @@ export class ReviewRunRepository {
 			.get();
 
 		if (row === undefined) {
-			throw new Error("Claimed review run is missing its repository.");
+			throw new Error("Claimed review run was not found.");
 		}
 
-		return row;
+		return {
+			id: row.id,
+			githubInstallationId: row.githubInstallationId,
+			repositoryOwner: row.repositoryOwner,
+			repositoryName: row.repositoryName,
+			repositoryFullName: row.repositoryFullName,
+			pullRequestNumber: row.pullRequestNumber,
+			headSha: row.headSha,
+			model: {
+				id: requireSnapshotValue(row.modelId),
+				apiName: requireSnapshotValue(row.modelName),
+				inputNanoUsdPerToken: requireSnapshotValue(row.modelInputNanoUsdPerToken),
+				cachedInputNanoUsdPerToken: requireSnapshotValue(
+					row.modelCachedInputNanoUsdPerToken,
+				),
+				outputNanoUsdPerToken: requireSnapshotValue(row.modelOutputNanoUsdPerToken),
+			},
+		};
 	}
 
 	completeReviewRun(
 		reviewRunId: string,
-		modelName: string,
+		usage: ReviewTokenUsage,
 		reviewFindings: readonly StoredFinding[],
 		reviewReportId: string,
 	): string {
@@ -149,7 +184,7 @@ export class ReviewRunRepository {
 				.update(reviewRuns)
 				.set({
 					status: "completed",
-					modelName,
+					...usage,
 					completedAt: now,
 					updatedAt: now,
 				})
@@ -196,4 +231,11 @@ export class ReviewRunRepository {
 			.where(eq(reviewRuns.id, reviewRunId))
 			.run();
 	}
+}
+
+function requireSnapshotValue<Value>(value: Value | null): Value {
+	if (value === null) {
+		throw new Error("Claimed review run is missing its model configuration.");
+	}
+	return value;
 }

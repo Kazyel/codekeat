@@ -22,6 +22,14 @@ const reviewRunSummarySchema = z.object({
 	findingCount: z.number().int().nonnegative(),
 	createdAt: z.string(),
 	completedAt: z.string().nullable(),
+	usage: z
+		.object({
+			inputTokens: z.number().int().nonnegative(),
+			outputTokens: z.number().int().nonnegative(),
+			cacheTokens: z.number().int().nonnegative(),
+			costUsdMicros: z.number().int().nonnegative(),
+		})
+		.nullable(),
 	reviewReportStatus: z.enum(["pending", "publishing", "published", "failed"]).nullable(),
 	githubCommentUrl: z.string().url().nullable(),
 });
@@ -47,12 +55,43 @@ const dashboardSessionSchema = z.object({
 });
 const dashboardSessionResponseSchema = z.object({ session: dashboardSessionSchema });
 const dashboardSessionValidationSchema = z.object({ user: dashboardUserSchema });
+const modelSchema = z.object({
+	id: z.string().uuid(),
+	displayName: z.string(),
+	apiName: z.string(),
+	inputNanoUsdPerToken: z.number().int().nonnegative(),
+	cachedInputNanoUsdPerToken: z.number().int().nonnegative(),
+	outputNanoUsdPerToken: z.number().int().nonnegative(),
+	enabled: z.boolean(),
+	selected: z.boolean(),
+	createdAt: z.string(),
+	updatedAt: z.string(),
+});
+const modelListSchema = z.object({ models: z.array(modelSchema) });
+const modelResponseSchema = z.object({ model: modelSchema });
+const modelMutationResponseSchema = z.object({ result: z.enum(["updated", "selected"]) });
 
 export type DashboardFinding = z.infer<typeof findingSchema>;
 export type DashboardReviewRunSummary = z.infer<typeof reviewRunSummarySchema>;
 export type DashboardReviewRunDetail = z.infer<typeof reviewRunDetailSchema>;
 export type DashboardUser = z.infer<typeof dashboardUserSchema>;
 export type DashboardSession = z.infer<typeof dashboardSessionSchema>;
+export type DashboardModel = z.infer<typeof modelSchema>;
+export interface DashboardModelInput {
+	readonly displayName: string;
+	readonly apiName: string;
+	readonly inputNanoUsdPerToken: number;
+	readonly cachedInputNanoUsdPerToken: number;
+	readonly outputNanoUsdPerToken: number;
+	readonly enabled: boolean;
+}
+export type ModelMutationOutcome =
+	| "success"
+	| "invalid"
+	| "unauthorized"
+	| "forbidden"
+	| "not_found"
+	| "conflict";
 
 export async function loadReviewRuns(): Promise<readonly DashboardReviewRunSummary[]> {
 	const response = await requestCodekeat("/api/v1/review-runs");
@@ -76,6 +115,51 @@ export async function loadReviewRun(reviewRunId: string): Promise<DashboardRevie
 		throw new Error("Codekeat review run response is invalid.");
 	}
 	return parsed.data.reviewRun;
+}
+export async function loadModels(sessionToken: string): Promise<readonly DashboardModel[]> {
+	const response = await requestCodekeat("/api/v1/models", { sessionToken });
+	const parsed = modelListSchema.safeParse(await response.json());
+	if (!parsed.success) {
+		throw new Error("Codekeat model list response is invalid.");
+	}
+	return parsed.data.models;
+}
+
+export async function createModel(
+	sessionToken: string,
+	input: DashboardModelInput,
+): Promise<ModelMutationOutcome> {
+	const response = await requestModelMutation("/api/v1/models", sessionToken, "POST", input);
+	if (!response.ok) {
+		return modelMutationFailure(response.status);
+	}
+	if (!modelResponseSchema.safeParse(await response.json()).success) {
+		throw new Error("Codekeat model response is invalid.");
+	}
+	return "success";
+}
+
+export async function updateModel(
+	sessionToken: string,
+	id: string,
+	input: Partial<DashboardModelInput>,
+): Promise<ModelMutationOutcome> {
+	const response = await requestModelMutation(
+		`/api/v1/models/${id}`,
+		sessionToken,
+		"PATCH",
+		input,
+	);
+	return parseModelMutationResponse(response, "updated");
+}
+
+export async function selectModel(sessionToken: string, id: string): Promise<ModelMutationOutcome> {
+	const response = await requestModelMutation(
+		`/api/v1/models/${id}/select`,
+		sessionToken,
+		"POST",
+	);
+	return parseModelMutationResponse(response, "selected");
 }
 
 export async function createDashboardSession(
@@ -121,18 +205,25 @@ export async function deleteDashboardSession(token: string): Promise<void> {
 }
 
 interface RequestOptions {
-	readonly method?: "DELETE" | "GET" | "POST";
+	readonly method?: "DELETE" | "GET" | "PATCH" | "POST";
 	readonly body?: string;
 	readonly allowNotFound?: boolean;
+	readonly allowedFailureStatuses?: readonly number[];
+	readonly sessionToken?: string;
 }
 
 async function requestCodekeat(path: string, options: RequestOptions = {}): Promise<Response> {
 	const environment = loadDashboardEnvironment(process.env);
+	const headers: Record<string, string> = {
+		authorization: `Bearer ${environment.dashboardApiToken}`,
+		"content-type": "application/json",
+	};
+	if (options.sessionToken !== undefined) {
+		headers["x-dashboard-session"] = options.sessionToken;
+	}
+
 	const response = await fetch(new URL(path, environment.codekeatApiUrl), {
-		headers: {
-			authorization: `Bearer ${environment.dashboardApiToken}`,
-			"content-type": "application/json",
-		},
+		headers,
 		method: options.method,
 		body: options.body,
 		cache: "no-store",
@@ -141,9 +232,54 @@ async function requestCodekeat(path: string, options: RequestOptions = {}): Prom
 	if (
 		response.ok ||
 		(options.allowNotFound === true && response.status === 404) ||
+		options.allowedFailureStatuses?.includes(response.status) === true ||
 		response.status === 401
 	) {
 		return response;
 	}
 	throw new Error(`Codekeat API request failed with status ${response.status}.`);
+}
+
+async function requestModelMutation(
+	path: string,
+	sessionToken: string,
+	method: "PATCH" | "POST",
+	input?: Partial<DashboardModelInput>,
+): Promise<Response> {
+	return requestCodekeat(path, {
+		method,
+		body: input === undefined ? undefined : JSON.stringify(input),
+		sessionToken,
+		allowedFailureStatuses: [400, 403, 404, 409],
+	});
+}
+
+async function parseModelMutationResponse(
+	response: Response,
+	expectedResult: "selected" | "updated",
+): Promise<ModelMutationOutcome> {
+	if (!response.ok) {
+		return modelMutationFailure(response.status);
+	}
+	const parsed = modelMutationResponseSchema.safeParse(await response.json());
+	if (!parsed.success || parsed.data.result !== expectedResult) {
+		throw new Error("Codekeat model mutation response is invalid.");
+	}
+	return "success";
+}
+
+function modelMutationFailure(status: number): Exclude<ModelMutationOutcome, "success"> {
+	if (status === 401) {
+		return "unauthorized";
+	}
+	if (status === 400) {
+		return "invalid";
+	}
+	if (status === 403) {
+		return "forbidden";
+	}
+	if (status === 404) {
+		return "not_found";
+	}
+	return "conflict";
 }

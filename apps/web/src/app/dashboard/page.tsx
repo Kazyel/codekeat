@@ -5,6 +5,7 @@ import { BrandLockup } from "../brand-lockup";
 
 import { loadReviewRuns } from "../lib/api-client";
 import { readSession } from "../lib/session";
+import { ReviewUsageSummary } from "../review-usage";
 
 export default async function DashboardPage(): Promise<ReactNode> {
 	const session = await readSession();
@@ -23,11 +24,16 @@ export default async function DashboardPage(): Promise<ReactNode> {
 						<h1>Pull requests analisados</h1>
 					</div>
 				</div>
-				<form action="/logout" method="post">
-					<button className="quiet-button" type="submit">
-						Sair de {session.email}
-					</button>
-				</form>
+				<div className="header-actions">
+					<Link className="quiet-button" href="/dashboard/models">
+						Modelos
+					</Link>
+					<form action="/logout" method="post">
+						<button className="quiet-button" type="submit">
+							Sair de {session.email}
+						</button>
+					</form>
+				</div>
 			</header>
 
 			<section className="run-list" aria-label="Review runs recentes">
@@ -52,6 +58,10 @@ export default async function DashboardPage(): Promise<ReactNode> {
 								<code>{reviewRun.headSha.slice(0, 7)}</code>
 								<span>{reviewRun.findingCount} findings</span>
 								<span>{reviewRun.status}</span>
+								<ReviewUsageSummary
+									completedAt={reviewRun.completedAt}
+									usage={reviewRun.usage}
+								/>
 							</span>
 						</Link>
 					))
