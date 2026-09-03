@@ -12,12 +12,13 @@ import {
 	updateModel,
 } from "../../lib/api-client";
 import { readSession, readSessionToken } from "../../lib/session";
+import { usdPerMillionToNanoUsdPerToken } from "./model-price";
 
 const USD_PER_MILLION_SCHEMA = z
 	.string()
 	.trim()
 	.regex(/^\d+(?:\.\d{1,3})?$/)
-	.transform((value) => Number(value) * 1_000)
+	.transform(usdPerMillionToNanoUsdPerToken)
 	.refine(Number.isSafeInteger);
 const MODEL_FORM_SCHEMA = z.object({
 	displayName: z.string().trim().min(1).max(100),
