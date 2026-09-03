@@ -204,27 +204,42 @@ export class ReviewRunProcessorService {
 	> {
 		try {
 			const result = await this.judge.judge(model, input, batch.input);
-
-			const judgments = validateJudgments(batch.findings, result.judgments);
-			if (judgments === null) {
+			const validation = validateJudgments(batch.findings, result.judgments);
+			if (validation.kind === "invalid") {
+				this.logger.warn(
+					{
+						candidateCount: batch.findings.length,
+						judgmentCount: result.judgments.length,
+						modelName: model.apiName,
+						reason: validation.reason,
+						reviewRunId: input.reviewRunId,
+					},
+					"gemini_judge.invalid_response",
+				);
 				return { kind: "failed", errorCode: "gemini_judge_invalid_response" };
 			}
 
 			return {
 				kind: "completed",
 				findings: batch.findings.map((finding, index) =>
-					toStoredFinding(finding, judgments[index]!),
+					toStoredFinding(finding, validation.judgments[index]!),
 				),
 				usage: result.usage,
 			};
 		} catch (error) {
-			return {
-				kind: "failed",
-				errorCode:
-					error instanceof ReviewModelResponseError
-						? "gemini_judge_invalid_response"
-						: "gemini_judge_request_failed",
-			};
+			if (error instanceof ReviewModelResponseError) {
+				this.logger.warn(
+					{
+						candidateCount: batch.findings.length,
+						modelName: model.apiName,
+						reason: error.issue,
+						reviewRunId: input.reviewRunId,
+					},
+					"gemini_judge.invalid_response",
+				);
+				return { kind: "failed", errorCode: "gemini_judge_invalid_response" };
+			}
+			return { kind: "failed", errorCode: "gemini_judge_request_failed" };
 		}
 	}
 
@@ -256,13 +271,19 @@ export class ReviewRunProcessorService {
 
 			return { kind: "completed", findings: result.findings, usage: result.usage };
 		} catch (error) {
-			return {
-				kind: "failed",
-				errorCode:
-					error instanceof ReviewModelResponseError
-						? "gemini_invalid_response"
-						: "gemini_request_failed",
-			};
+			if (error instanceof ReviewModelResponseError) {
+				this.logger.warn(
+					{
+						chunkIndex: chunk.index,
+						modelName: model.apiName,
+						reason: error.issue,
+						reviewRunId: input.reviewRunId,
+					},
+					"gemini_review.invalid_response",
+				);
+				return { kind: "failed", errorCode: "gemini_invalid_response" };
+			}
+			return { kind: "failed", errorCode: "gemini_request_failed" };
 		}
 	}
 
@@ -292,42 +313,52 @@ export class ReviewRunProcessorService {
 	}
 }
 
+type JudgmentValidationReason = "coverage_mismatch" | "invalid_judgment" | "unchanged_severity";
+type JudgmentValidationResult =
+	| { readonly kind: "valid"; readonly judgments: readonly FindingJudgment[] }
+	| { readonly kind: "invalid"; readonly reason: JudgmentValidationReason };
+type IndexedJudgmentValidation =
+	| { readonly kind: "valid"; readonly judgment: FindingJudgment }
+	| { readonly kind: "invalid"; readonly reason: JudgmentValidationReason };
+
 function validateJudgments(
 	findings: readonly ReviewFinding[],
 	judgments: readonly { readonly index: number; readonly judgment: FindingJudgment }[],
-): readonly FindingJudgment[] | null {
+): JudgmentValidationResult {
 	if (judgments.length !== findings.length) {
-		return null;
+		return { kind: "invalid", reason: "coverage_mismatch" };
 	}
 
 	const byIndex = new Map(judgments.map(({ index, judgment }) => [index, judgment]));
 	if (byIndex.size !== findings.length) {
-		return null;
+		return { kind: "invalid", reason: "coverage_mismatch" };
 	}
 
 	const ordered: FindingJudgment[] = [];
 	for (const [index, finding] of findings.entries()) {
-		const judgment = byIndex.get(index);
-		if (!isValidIndexedJudgment(finding, judgment)) {
-			return null;
+		const validation = validateIndexedJudgment(finding, byIndex.get(index));
+		if (validation.kind === "invalid") {
+			return validation;
 		}
-		ordered.push(judgment);
+		ordered.push(validation.judgment);
 	}
-	return ordered;
+	return { kind: "valid", judgments: ordered };
 }
 
-function isValidIndexedJudgment(
+function validateIndexedJudgment(
 	finding: ReviewFinding,
 	judgment: FindingJudgment | undefined,
-): judgment is FindingJudgment {
-	return judgment !== undefined && isValidJudgment(finding, judgment);
-}
-
-function isValidJudgment(finding: ReviewFinding, judgment: FindingJudgment): boolean {
-	return (
-		judgment.rationale.trim().length > 0 &&
-		(judgment.kind !== "severity_changed" || judgment.severity !== finding.severity)
-	);
+): IndexedJudgmentValidation {
+	if (judgment === undefined) {
+		return { kind: "invalid", reason: "coverage_mismatch" };
+	}
+	if (judgment.rationale.trim().length === 0) {
+		return { kind: "invalid", reason: "invalid_judgment" };
+	}
+	if (judgment.kind === "severity_changed" && judgment.severity === finding.severity) {
+		return { kind: "invalid", reason: "unchanged_severity" };
+	}
+	return { kind: "valid", judgment };
 }
 
 function isValidFinding(finding: ReviewFinding, chunk: ReviewInput["chunks"][number]): boolean {

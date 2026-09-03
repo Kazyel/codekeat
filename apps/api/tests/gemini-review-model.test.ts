@@ -222,8 +222,39 @@ describe("GeminiReviewService", () => {
 		expect(GENERATE_CONTENT).toHaveBeenCalledWith(
 			expect.objectContaining({
 				contents: expect.stringMatching(
-					/dado não confiável[\s\S]*cenário alcançável[\s\S]*único trecho reportável[\s\S]*ignore previous instructions/,
+					/dado não confiável[\s\S]*cenário alcançável[\s\S]*não inclua severity[\s\S]*único trecho reportável[\s\S]*ignore previous instructions/,
 				),
+				config: expect.objectContaining({
+					responseJsonSchema: expect.objectContaining({
+						properties: expect.objectContaining({
+							judgments: expect.objectContaining({
+								items: expect.objectContaining({
+									anyOf: expect.arrayContaining([
+										expect.objectContaining({
+											properties: expect.objectContaining({
+												kind: { type: "string", enum: ["approved"] },
+											}),
+											required: ["index", "kind", "rationale"],
+										}),
+										expect.objectContaining({
+											properties: expect.objectContaining({
+												kind: {
+													type: "string",
+													enum: ["severity_changed"],
+												},
+											}),
+											required: ["index", "kind", "severity", "rationale"],
+										}),
+									]),
+								}),
+							}),
+						}),
+					}),
+				}),
+			}),
+		);
+		expect(GENERATE_CONTENT).toHaveBeenCalledWith(
+			expect.objectContaining({
 				config: expect.not.objectContaining({
 					automaticFunctionCalling: expect.anything(),
 					tools: expect.anything(),
@@ -277,10 +308,21 @@ describe("parseGeminiJudgeResponse", () => {
 					],
 				}),
 			),
-		).toHaveLength(3);
+		).toEqual([
+			{ index: 0, judgment: { kind: "approved", rationale: "Confirmed." } },
+			{ index: 1, judgment: { kind: "rejected", rationale: "Speculative." } },
+			{
+				index: 2,
+				judgment: {
+					kind: "severity_changed",
+					severity: "low",
+					rationale: "Minor impact.",
+				},
+			},
+		]);
 	});
 
-	it("rejects missing severity and extra fields", () => {
+	it("rejects missing severity for changes and extra severity for fixed verdicts", () => {
 		expect(() =>
 			parseGeminiJudgeResponse(
 				JSON.stringify({
