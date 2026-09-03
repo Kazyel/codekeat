@@ -40,6 +40,12 @@ export default async function ReviewDetailPage({
 							<code>{reviewRun.headSha.slice(0, 7)}</code>
 							<span>{reviewRun.status}</span>
 							<span>{reviewRun.findingCount} findings</span>
+							{reviewRun.reviewStrategyVersion === null ? null : (
+								<span>{reviewRun.reviewStrategyVersion}</span>
+							)}
+							{reviewRun.errorCode === null ? null : (
+								<span>Falha: {reviewRun.errorCode}</span>
+							)}
 							{reviewRun.githubCommentUrl === null ? null : (
 								<a
 									href={reviewRun.githubCommentUrl}
@@ -55,6 +61,11 @@ export default async function ReviewDetailPage({
 			</header>
 
 			<ReviewUsageDetails completedAt={reviewRun.completedAt} usage={reviewRun.usage} />
+			<ReviewUsageDetails
+				completedAt={reviewRun.completedAt}
+				usage={reviewRun.judgeUsage}
+				title="Uso do juiz"
+			/>
 
 			{reviewRun.findings.length === 0 ? (
 				<section className="empty-state">
@@ -67,13 +78,32 @@ export default async function ReviewDetailPage({
 			) : (
 				<section className="finding-list" aria-label="Findings">
 					{reviewRun.findings.map((finding) => (
-						<article className={`finding finding-${finding.severity}`} key={finding.id}>
-							<p className="severity">{finding.severity}</p>
+						<article
+							className={`finding finding-${finding.judgeSeverity ?? finding.severity}`}
+							key={finding.id}
+						>
+							<p className="severity">
+								{finding.judgeSeverity ?? finding.severity}
+								{finding.judgeSeverity === null
+									? null
+									: ` (corrigida de ${finding.severity})`}
+							</p>
 							<h2>{finding.title}</h2>
 							<code>
 								{finding.path}:{finding.line}
 							</code>
 							<p>{finding.rationale}</p>
+							<p>
+								Juiz: {finding.judgeVerdict}
+								{finding.judgeRationale === null
+									? null
+									: ` — ${finding.judgeRationale}`}
+							</p>
+							<p>
+								{finding.includedInReport
+									? "Publicado no comentário"
+									: "Não publicado"}
+							</p>
 						</article>
 					))}
 				</section>

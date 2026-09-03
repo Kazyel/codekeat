@@ -21,6 +21,7 @@ type ReviewUsage = DashboardReviewRunSummary["usage"];
 interface ReviewUsageProperties {
 	readonly completedAt: string | null;
 	readonly usage: ReviewUsage;
+	readonly title?: string;
 }
 
 export function ReviewUsageSummary({ completedAt, usage }: ReviewUsageProperties): ReactNode {
@@ -41,10 +42,14 @@ export function ReviewUsageSummary({ completedAt, usage }: ReviewUsageProperties
 	);
 }
 
-export function ReviewUsageDetails({ completedAt, usage }: ReviewUsageProperties): ReactNode {
+export function ReviewUsageDetails({
+	completedAt,
+	usage,
+	title = "Uso da review",
+}: ReviewUsageProperties): ReactNode {
 	return (
-		<section className="review-usage" aria-labelledby="review-usage-title">
-			<h2 id="review-usage-title">Uso da review</h2>
+		<section className="review-usage">
+			<h2>{title}</h2>
 			<dl className="review-usage-grid">
 				<UsageMetric label="Realizada">
 					{completedAt === null ? "Não concluída" : <LocalDateTime value={completedAt} />}

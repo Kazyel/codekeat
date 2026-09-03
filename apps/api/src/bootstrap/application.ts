@@ -22,6 +22,7 @@ import {
 import { createModelCatalogController, ModelCatalogRepository } from "../features/models/index.js";
 import { GeminiReviewService } from "#integrations/gemini";
 import {
+	createReviewQualityController,
 	createReviewReadController,
 	createReviewUsageController,
 	ReviewQueryRepository,
@@ -107,6 +108,7 @@ export async function configureApplication(
 			reviewRunRepository,
 			new GitHubReviewInputService(app),
 			model,
+			model,
 			queue,
 			app.log,
 		);
@@ -139,6 +141,9 @@ export async function configureApplication(
 		);
 		options.addHandler(
 			createReviewUsageController(reviewQueryRepository, environment.dashboardApiToken),
+		);
+		options.addHandler(
+			createReviewQualityController(reviewQueryRepository, environment.dashboardApiToken),
 		);
 		options.addHandler(
 			createModelCatalogController(

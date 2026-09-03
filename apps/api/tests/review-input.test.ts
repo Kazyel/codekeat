@@ -26,6 +26,40 @@ describe("createReviewInputChunks", () => {
 			true,
 		);
 	});
+
+	it("adds line-aligned context from only the immediate neighboring chunks", () => {
+		const chunks = createReviewInputChunks(
+			[
+				createLargeFileDiff("first.ts"),
+				createLargeFileDiff("second.ts"),
+				createLargeFileDiff("third.ts"),
+			].join(""),
+		);
+
+		expect(chunks).toHaveLength(3);
+		expect(chunks[0]?.referenceBefore).toBe("");
+		expect(chunks[0]?.referenceAfter).toBe(
+			chunks[1]?.diff.slice(0, chunks[0].referenceAfter.length),
+		);
+		expect(chunks[1]?.referenceBefore).toBe(
+			chunks[0]?.diff.slice(-chunks[1].referenceBefore.length),
+		);
+		expect(chunks[1]?.referenceAfter).toBe(
+			chunks[2]?.diff.slice(0, chunks[1].referenceAfter.length),
+		);
+		expect(chunks[2]?.referenceAfter).toBe("");
+		expect(
+			chunks.every(
+				(chunk) =>
+					chunk.referenceBefore.length <= 4_000 &&
+					chunk.referenceAfter.length <= 4_000 &&
+					(chunk.referenceBefore === "" || chunk.referenceBefore.endsWith("\n")) &&
+					(chunk.referenceAfter === "" || chunk.referenceAfter.endsWith("\n")),
+			),
+		).toBe(true);
+		expect(chunks[1]?.changedLines.has("first.ts")).toBe(false);
+		expect(chunks[1]?.changedLines.has("third.ts")).toBe(false);
+	});
 });
 
 const SAMPLE_DIFF = `diff --git a/src/example.ts b/src/example.ts
@@ -37,3 +71,19 @@ index 1111111..2222222 100644
 +export const enabled = true;
 +export const retries = 3;
 `;
+
+function createLargeFileDiff(path: string): string {
+	const lines = Array.from(
+		{ length: 600 },
+		(_, index) => `+${path}-${index}-${"x".repeat(90)}\n`,
+	).join("");
+	return (
+		[
+			`diff --git a/${path} b/${path}`,
+			`--- a/${path}`,
+			`+++ b/${path}`,
+			"@@ -0,0 +1,600 @@",
+			"",
+		].join("\n") + lines
+	);
+}

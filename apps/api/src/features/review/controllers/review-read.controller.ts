@@ -14,6 +14,7 @@ import type { ReviewQueryRepository } from "../repositories/review-query.reposit
 
 const REVIEW_RUNS_PATH = "/api/v1/review-runs";
 const REVIEW_USAGE_PATH = "/api/v1/review-usage";
+const REVIEW_QUALITY_PATH = "/api/v1/review-quality";
 const REVIEW_USAGE_QUERY_SCHEMA = z
 	.object({
 		groupBy: z.enum(["day", "week", "month"]),
@@ -40,6 +41,14 @@ export function createReviewUsageController(
 ): HttpHandler {
 	return (request, response) =>
 		handleReviewUsageRequest(request, response, repository, dashboardApiToken);
+}
+
+export function createReviewQualityController(
+	repository: ReviewQueryRepository,
+	dashboardApiToken: string,
+): HttpHandler {
+	return (request, response) =>
+		handleReviewQualityRequest(request, response, repository, dashboardApiToken);
 }
 
 function handleRequest(
@@ -88,6 +97,29 @@ function handleReviewUsageRequest(
 	return respondToReviewUsage(url, response, repository);
 }
 
+function handleReviewQualityRequest(
+	request: IncomingMessage,
+	response: ServerResponse,
+	repository: ReviewQueryRepository,
+	dashboardApiToken: string,
+): boolean {
+	if (request.method !== "GET") {
+		return false;
+	}
+
+	const url = new URL(request.url ?? "/", "http://localhost");
+	if (url.pathname !== REVIEW_QUALITY_PATH) {
+		return false;
+	}
+
+	if (!hasValidBearerToken(request, dashboardApiToken)) {
+		sendJson(response, HTTP_STATUS_UNAUTHORIZED, { error: "unauthorized" });
+		return true;
+	}
+
+	return respondToReviewQuality(url, response, repository);
+}
+
 function respondToReviewUsage(
 	url: URL,
 	response: ServerResponse,
@@ -101,6 +133,23 @@ function respondToReviewUsage(
 
 	sendJson(response, HTTP_STATUS_OK, {
 		usage: repository.listReviewUsage(query.data.groupBy, query.data.repository),
+	});
+	return true;
+}
+
+function respondToReviewQuality(
+	url: URL,
+	response: ServerResponse,
+	repository: ReviewQueryRepository,
+): boolean {
+	const query = REVIEW_USAGE_QUERY_SCHEMA.safeParse(Object.fromEntries(url.searchParams));
+	if (!query.success) {
+		sendJson(response, HTTP_STATUS_BAD_REQUEST, { error: "invalid_query" });
+		return true;
+	}
+
+	sendJson(response, HTTP_STATUS_OK, {
+		quality: repository.listReviewQuality(query.data.groupBy, query.data.repository),
 	});
 	return true;
 }

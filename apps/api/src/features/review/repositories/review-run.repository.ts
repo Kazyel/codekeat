@@ -7,14 +7,13 @@ import {
 } from "@codekeat/database";
 import { and, eq, sql } from "drizzle-orm";
 import { currentTimestamp } from "#shared/database";
-import type { ReviewTokenUsage } from "../types/review-input.types.js";
 
 import type {
 	ExistingReviewRun,
+	ReviewRunCompletion,
 	ReviewRunErrorCode,
 	ReviewRunInput,
 	RunnableReviewRun,
-	StoredFinding,
 } from "../types/review-repository.types.js";
 import type { ReviewRunIgnoreReason, ReviewTrigger } from "../types/review-run.types.js";
 import { ReviewReportRepository } from "./review-report.repository.js";
@@ -171,19 +170,14 @@ export class ReviewRunRepository {
 		};
 	}
 
-	completeReviewRun(
-		reviewRunId: string,
-		usage: ReviewTokenUsage,
-		reviewFindings: readonly StoredFinding[],
-		reviewReportId: string,
-	): string {
+	completeReviewRun(reviewRunId: string, completion: ReviewRunCompletion): string {
 		const now = currentTimestamp();
 		return this.connection.db.transaction((transaction) => {
-			if (reviewFindings.length > 0) {
+			if (completion.findings.length > 0) {
 				transaction
 					.insert(findings)
 					.values(
-						reviewFindings.map((finding) => ({
+						completion.findings.map((finding) => ({
 							...finding,
 							reviewRunId,
 							createdAt: now,
@@ -196,7 +190,16 @@ export class ReviewRunRepository {
 				.update(reviewRuns)
 				.set({
 					status: "completed",
-					...usage,
+					...completion.reviewUsage,
+					reviewStrategyVersion: completion.reviewStrategyVersion,
+					changedLineCount: completion.changedLineCount,
+					reviewChunkCount: completion.reviewChunkCount,
+					judgeCallCount: completion.judgeCallCount,
+					processingDurationMs: completion.processingDurationMs,
+					judgeInputTokens: completion.judgeUsage.inputTokens,
+					judgeOutputTokens: completion.judgeUsage.outputTokens,
+					judgeCacheTokens: completion.judgeUsage.cacheTokens,
+					judgeCostUsdMicros: completion.judgeUsage.costUsdMicros,
 					completedAt: now,
 					updatedAt: now,
 				})
@@ -220,7 +223,7 @@ export class ReviewRunRepository {
 				transaction,
 				run,
 				reviewRunId,
-				reviewReportId,
+				completion.reviewReportId,
 				now,
 			);
 		});

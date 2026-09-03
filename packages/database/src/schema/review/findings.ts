@@ -14,10 +14,23 @@ export const findings = sqliteTable(
 		line: integer("line").notNull(),
 		title: text("title").notNull(),
 		rationale: text("rationale").notNull(),
+		judgeVerdict: text("judge_verdict", {
+			enum: ["not_evaluated", "approved", "rejected", "severity_changed"],
+		})
+			.notNull()
+			.default("not_evaluated"),
+		judgeSeverity: text("judge_severity", {
+			enum: ["critical", "high", "medium", "low"],
+		}),
+		judgeRationale: text("judge_rationale"),
+		includedInReport: integer("included_in_report", { mode: "boolean" })
+			.notNull()
+			.default(true),
 		createdAt: text("created_at").notNull(),
 	},
 	(table) => [
 		index("findings_review_run_id_index").on(table.reviewRunId),
+		index("findings_review_run_included_index").on(table.reviewRunId, table.includedInReport),
 		uniqueIndex("findings_review_run_path_line_title_unique").on(
 			table.reviewRunId,
 			table.path,

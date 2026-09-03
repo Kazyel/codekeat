@@ -1,4 +1,5 @@
-import { reviewReports } from "@codekeat/database";
+import { findings, reviewReports } from "@codekeat/database";
+import { eq } from "drizzle-orm";
 import pino from "pino";
 import { describe, expect, it } from "vitest";
 
@@ -27,14 +28,18 @@ describe("ReviewReportPublisherService", () => {
 		).publish(report.id);
 
 		expect(client.reports).toHaveLength(1);
-		expect(formatReviewReport(client.reports[0] ?? fail())).toContain(
-			"Não encontramos problemas concretos",
+		const body = formatReviewReport(client.reports[0] ?? fail());
+		expect(body).toContain(
+			"**Escopo:** diff completo do PR no snapshot do HEAD `aaaaaaa` — não apenas esse commit.",
+		);
+		expect(body).toContain(
+			"Não encontramos problemas concretos no diff completo deste PR nesse snapshot.",
 		);
 		expect(database.connection.db.select().from(reviewReports).get()?.status).toBe("published");
 		database.close();
 	});
 
-	it("updates an existing comment and records publication failures", async () => {
+	it("retries a failed report without creating a duplicate", async () => {
 		const database = createCompletedReview([FINDING]);
 		const report = database.connection.db.select().from(reviewReports).get();
 		if (report === undefined) {
@@ -58,6 +63,78 @@ describe("ReviewReportPublisherService", () => {
 			status: "failed",
 			errorCode: "github_comment_unavailable",
 		});
+		expect(database.connection.db.select().from(reviewReports).all()).toHaveLength(1);
+		database.close();
+	});
+
+	it("excludes rejected findings and publishes corrected severity", () => {
+		const database = createCompletedReview([
+			FINDING,
+			{ ...FINDING, title: "Corrected severity" },
+		]);
+		database.connection.db
+			.update(findings)
+			.set({
+				judgeVerdict: "rejected",
+				judgeRationale: "Speculative.",
+				includedInReport: false,
+			})
+			.where(eq(findings.title, FINDING.title))
+			.run();
+		database.connection.db
+			.update(findings)
+			.set({
+				judgeVerdict: "severity_changed",
+				judgeSeverity: "medium",
+				judgeRationale: "Localized impact.",
+			})
+			.where(eq(findings.title, "Corrected severity"))
+			.run();
+
+		const report = database.reviewReportRepository.claimReviewReport("report-1");
+
+		expect(report?.findings).toMatchObject([
+			{ title: "Corrected severity", severity: "medium" },
+		]);
+		database.close();
+	});
+
+	it("creates a distinct report for every run of the same pull request", () => {
+		const database = createCompletedReview([]);
+		database.reviewRunRepository.createReviewRun({
+			id: "review-run-2",
+			githubRepositoryId: 20,
+			pullRequestNumber: 30,
+			headSha: "b".repeat(40),
+			trigger: "synchronize",
+			status: "queued",
+			policyJson: '{"enabled":true,"version":1}',
+			policySource: "default",
+			policyWarningCode: null,
+			ignoreReason: null,
+			model: database.selectedModel,
+		});
+		database.reviewRunRepository.completeReviewRun("review-run-2", {
+			reviewUsage: { inputTokens: 1, outputTokens: 1, cacheTokens: 0, costUsdMicros: 1 },
+			judgeUsage: { inputTokens: 0, outputTokens: 0, cacheTokens: 0, costUsdMicros: 0 },
+			findings: [],
+			reviewReportId: "report-2",
+			reviewStrategyVersion: "compact-judge-v3",
+			changedLineCount: 1,
+			reviewChunkCount: 1,
+			judgeCallCount: 0,
+			processingDurationMs: 1,
+		});
+
+		expect(
+			database.connection.db
+				.select({ id: reviewReports.id, reviewRunId: reviewReports.reviewRunId })
+				.from(reviewReports)
+				.all(),
+		).toEqual([
+			{ id: "report-1", reviewRunId: REVIEW_RUN_ID },
+			{ id: "report-2", reviewRunId: "review-run-2" },
+		]);
 		database.close();
 	});
 });
@@ -67,6 +144,10 @@ describe("formatReviewReport", () => {
 		const report = createReport([FINDING]);
 		const body = formatReviewReport(report);
 
+		expect(body).toContain(
+			"**Escopo:** diff completo do PR no snapshot do HEAD `aaaaaaa` — não apenas esse commit.",
+		);
+		expect(body).toContain("Encontramos observações concretas no diff completo deste PR:");
 		expect(body).toContain("### High (1)");
 		expect(body).toContain("src/example.ts:2");
 		expect(body).toContain("@​team");
@@ -82,7 +163,7 @@ class RecordedPublisher implements ReviewReportPublisherClient {
 	): Promise<{ readonly githubCommentId: number; readonly githubCommentUrl: string }> {
 		this.reports.push(report);
 		return {
-			githubCommentId: report.githubCommentId ?? 99,
+			githubCommentId: 99,
 			githubCommentUrl: "https://github.com/takeat/codekeat/pull/30#issuecomment-99",
 		};
 	}
@@ -122,15 +203,24 @@ function createCompletedReview(reviewFindings: readonly (typeof FINDING)[]) {
 		ignoreReason: null,
 		model: database.selectedModel,
 	});
-	database.reviewRunRepository.completeReviewRun(
-		REVIEW_RUN_ID,
-		{ inputTokens: 1, outputTokens: 1, cacheTokens: 0, costUsdMicros: 1 },
-		reviewFindings.map((currentFinding, index) => ({
+	database.reviewRunRepository.completeReviewRun(REVIEW_RUN_ID, {
+		reviewUsage: { inputTokens: 1, outputTokens: 1, cacheTokens: 0, costUsdMicros: 1 },
+		judgeUsage: { inputTokens: 1, outputTokens: 1, cacheTokens: 0, costUsdMicros: 1 },
+		findings: reviewFindings.map((currentFinding, index) => ({
 			...currentFinding,
 			id: `finding-${index}`,
+			judgeVerdict: "approved",
+			judgeSeverity: null,
+			judgeRationale: "Confirmed.",
+			includedInReport: true,
 		})),
-		"report-1",
-	);
+		reviewReportId: "report-1",
+		reviewStrategyVersion: "judge-gate-v1",
+		changedLineCount: 1,
+		reviewChunkCount: 1,
+		judgeCallCount: reviewFindings.length === 0 ? 0 : 1,
+		processingDurationMs: 100,
+	});
 	return database;
 }
 

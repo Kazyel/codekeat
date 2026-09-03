@@ -9,6 +9,10 @@ const findingSchema = z.object({
 	line: z.number().int().positive(),
 	title: z.string(),
 	rationale: z.string(),
+	judgeVerdict: z.enum(["not_evaluated", "approved", "rejected", "severity_changed"]),
+	judgeSeverity: z.enum(["critical", "high", "medium", "low"]).nullable(),
+	judgeRationale: z.string().nullable(),
+	includedInReport: z.boolean(),
 });
 
 const reviewRunSummarySchema = z.object({
@@ -30,6 +34,19 @@ const reviewRunSummarySchema = z.object({
 			costUsdMicros: z.number().int().nonnegative(),
 		})
 		.nullable(),
+	judgeUsage: z
+		.object({
+			inputTokens: z.number().int().nonnegative(),
+			outputTokens: z.number().int().nonnegative(),
+			cacheTokens: z.number().int().nonnegative(),
+			costUsdMicros: z.number().int().nonnegative(),
+		})
+		.nullable(),
+	reviewStrategyVersion: z.string().nullable(),
+	changedLineCount: z.number().int().nonnegative().nullable(),
+	reviewChunkCount: z.number().int().nonnegative().nullable(),
+	judgeCallCount: z.number().int().nonnegative().nullable(),
+	processingDurationMs: z.number().int().nonnegative().nullable(),
 	reviewReportStatus: z.enum(["pending", "publishing", "published", "failed"]).nullable(),
 	githubCommentUrl: z.string().url().nullable(),
 });
@@ -44,6 +61,31 @@ const reviewRunDetailSchema = reviewRunSummarySchema.extend({
 
 const reviewRunListSchema = z.object({ reviewRuns: z.array(reviewRunSummarySchema) });
 const reviewRunResponseSchema = z.object({ reviewRun: reviewRunDetailSchema });
+const reviewQualitySchema = z.object({
+	period: z.string(),
+	repositoryFullName: z.string(),
+	reviewStrategyVersion: z.string(),
+	evaluatedFindingCount: z.number().int().nonnegative(),
+	approvedFindingCount: z.number().int().nonnegative(),
+	rejectedFindingCount: z.number().int().nonnegative(),
+	severityChangedFindingCount: z.number().int().nonnegative(),
+	acceptedFindingCount: z.number().int().nonnegative(),
+	judgeApprovalRateBasisPoints: z.number().int().nonnegative().nullable(),
+	acceptedFindingsPerThousandChangedLines: z.number().nonnegative().nullable(),
+	changedLineCount: z.number().int().nonnegative(),
+	completedRunCount: z.number().int().nonnegative(),
+	reviewInputTokens: z.number().int().nonnegative(),
+	reviewOutputTokens: z.number().int().nonnegative(),
+	reviewCacheTokens: z.number().int().nonnegative(),
+	reviewCostUsdMicros: z.number().int().nonnegative(),
+	judgeInputTokens: z.number().int().nonnegative(),
+	judgeOutputTokens: z.number().int().nonnegative(),
+	judgeCacheTokens: z.number().int().nonnegative(),
+	judgeCostUsdMicros: z.number().int().nonnegative(),
+	judgeCallCount: z.number().int().nonnegative(),
+	averageProcessingDurationMs: z.number().int().nonnegative(),
+});
+const reviewQualityResponseSchema = z.object({ quality: z.array(reviewQualitySchema) });
 const dashboardUserSchema = z.object({
 	id: z.string().uuid(),
 	email: z.string().email(),
@@ -74,6 +116,7 @@ const modelMutationResponseSchema = z.object({ result: z.enum(["updated", "selec
 export type DashboardFinding = z.infer<typeof findingSchema>;
 export type DashboardReviewRunSummary = z.infer<typeof reviewRunSummarySchema>;
 export type DashboardReviewRunDetail = z.infer<typeof reviewRunDetailSchema>;
+export type DashboardReviewQuality = z.infer<typeof reviewQualitySchema>;
 export type DashboardUser = z.infer<typeof dashboardUserSchema>;
 export type DashboardSession = z.infer<typeof dashboardSessionSchema>;
 export type DashboardModel = z.infer<typeof modelSchema>;
@@ -115,6 +158,15 @@ export async function loadReviewRun(reviewRunId: string): Promise<DashboardRevie
 		throw new Error("Codekeat review run response is invalid.");
 	}
 	return parsed.data.reviewRun;
+}
+
+export async function loadReviewQuality(): Promise<readonly DashboardReviewQuality[]> {
+	const response = await requestCodekeat("/api/v1/review-quality?groupBy=month");
+	const parsed = reviewQualityResponseSchema.safeParse(await response.json());
+	if (!parsed.success) {
+		throw new Error("Codekeat review quality response is invalid.");
+	}
+	return parsed.data.quality;
 }
 export async function loadModels(sessionToken: string): Promise<readonly DashboardModel[]> {
 	const response = await requestCodekeat("/api/v1/models", { sessionToken });

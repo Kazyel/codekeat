@@ -5,20 +5,26 @@ import { once } from "node:events";
 import { createServer, type Server } from "node:http";
 import { describe, expect, it } from "vitest";
 
-import { createReviewReadController, createReviewUsageController } from "#features/review";
-import { createTestDatabase } from "./test-database.js";
+import {
+	createReviewQualityController,
+	createReviewReadController,
+	createReviewUsageController,
+	type ReviewTokenUsage,
+	type StoredFinding,
+} from "#features/review";
+import { createTestDatabase, type TestDatabase } from "./test-database.js";
 
 describe("createReviewReadController", () => {
 	it("requires the internal token and returns run summaries and details", async () => {
 		const database = createTestDatabase();
 		const reviewRunId = randomUUID();
 		prepareReviewRun(database, reviewRunId);
-		database.reviewRunRepository.completeReviewRun(
-			reviewRunId,
-			{ inputTokens: 1_200, outputTokens: 300, cacheTokens: 200, costUsdMicros: 2_345 },
-			[],
-			randomUUID(),
-		);
+		completeReview(database, reviewRunId, {
+			inputTokens: 1_200,
+			outputTokens: 300,
+			cacheTokens: 200,
+			costUsdMicros: 2_345,
+		});
 		database.connection.db
 			.update(reviewRuns)
 			.set({ completedAt: "2026-09-03T14:30:00.000Z" })
@@ -83,18 +89,18 @@ describe("createReviewReadController", () => {
 		const secondReviewRunId = randomUUID();
 		prepareReviewRun(database, firstReviewRunId, 30);
 		prepareReviewRun(database, secondReviewRunId, 31);
-		database.reviewRunRepository.completeReviewRun(
-			firstReviewRunId,
-			{ inputTokens: 100, outputTokens: 20, cacheTokens: 10, costUsdMicros: 100 },
-			[],
-			randomUUID(),
-		);
-		database.reviewRunRepository.completeReviewRun(
-			secondReviewRunId,
-			{ inputTokens: 200, outputTokens: 40, cacheTokens: 20, costUsdMicros: 200 },
-			[],
-			randomUUID(),
-		);
+		completeReview(database, firstReviewRunId, {
+			inputTokens: 100,
+			outputTokens: 20,
+			cacheTokens: 10,
+			costUsdMicros: 100,
+		});
+		completeReview(database, secondReviewRunId, {
+			inputTokens: 200,
+			outputTokens: 40,
+			cacheTokens: 20,
+			costUsdMicros: 200,
+		});
 		database.connection.db
 			.update(reviewRuns)
 			.set({ completedAt: "2026-01-31T12:00:00.000Z" })
@@ -170,10 +176,129 @@ describe("createReviewReadController", () => {
 		await close(server);
 		database.close();
 	});
+
+	it("aggregates judge quality without multiplying run usage by findings", async () => {
+		const database = createTestDatabase();
+		const reviewRunId = randomUUID();
+		prepareReviewRun(database, reviewRunId);
+		database.reviewRunRepository.completeReviewRun(reviewRunId, {
+			reviewUsage: {
+				inputTokens: 100,
+				outputTokens: 20,
+				cacheTokens: 10,
+				costUsdMicros: 100,
+			},
+			judgeUsage: {
+				inputTokens: 50,
+				outputTokens: 10,
+				cacheTokens: 5,
+				costUsdMicros: 50,
+			},
+			findings: [
+				createStoredFinding("approved", true, "finding-1"),
+				createStoredFinding("rejected", false, "finding-2"),
+			],
+			reviewReportId: randomUUID(),
+			reviewStrategyVersion: "judge-gate-v1",
+			changedLineCount: 20,
+			reviewChunkCount: 1,
+			judgeCallCount: 1,
+			processingDurationMs: 120,
+		});
+		database.connection.db
+			.update(reviewRuns)
+			.set({ completedAt: "2026-09-03T14:30:00.000Z" })
+			.where(eq(reviewRuns.id, reviewRunId))
+			.run();
+		const server = createServer((request, response) => {
+			if (
+				!createReviewQualityController(database.reviewQueryRepository, "internal-token")(
+					request,
+					response,
+				)
+			) {
+				response.writeHead(404).end();
+			}
+		});
+		await listen(server);
+
+		const response = await fetch(
+			`http://127.0.0.1:${port(server)}/api/v1/review-quality?groupBy=month`,
+			{ headers: { authorization: "Bearer internal-token" } },
+		);
+
+		expect(await response.json()).toEqual({
+			quality: [
+				{
+					period: "2026-09",
+					repositoryFullName: "takeat/codekeat",
+					reviewStrategyVersion: "judge-gate-v1",
+					evaluatedFindingCount: 2,
+					approvedFindingCount: 1,
+					rejectedFindingCount: 1,
+					severityChangedFindingCount: 0,
+					acceptedFindingCount: 1,
+					judgeApprovalRateBasisPoints: 5_000,
+					acceptedFindingsPerThousandChangedLines: 50,
+					changedLineCount: 20,
+					completedRunCount: 1,
+					reviewInputTokens: 100,
+					reviewOutputTokens: 20,
+					reviewCacheTokens: 10,
+					reviewCostUsdMicros: 100,
+					judgeInputTokens: 50,
+					judgeOutputTokens: 10,
+					judgeCacheTokens: 5,
+					judgeCostUsdMicros: 50,
+					judgeCallCount: 1,
+					averageProcessingDurationMs: 120,
+				},
+			],
+		});
+		await close(server);
+		database.close();
+	});
 });
 
+function completeReview(
+	database: TestDatabase,
+	reviewRunId: string,
+	reviewUsage: ReviewTokenUsage,
+): void {
+	database.reviewRunRepository.completeReviewRun(reviewRunId, {
+		reviewUsage,
+		judgeUsage: { inputTokens: 10, outputTokens: 2, cacheTokens: 1, costUsdMicros: 10 },
+		findings: [],
+		reviewReportId: randomUUID(),
+		reviewStrategyVersion: "judge-gate-v1",
+		changedLineCount: 10,
+		reviewChunkCount: 1,
+		judgeCallCount: 0,
+		processingDurationMs: 100,
+	});
+}
+
+function createStoredFinding(
+	judgeVerdict: "approved" | "rejected",
+	includedInReport: boolean,
+	id: string,
+): StoredFinding {
+	return {
+		id,
+		severity: "high",
+		path: "src/example.ts",
+		line: 2,
+		title: id,
+		rationale: "Concrete rationale.",
+		judgeVerdict,
+		judgeSeverity: null,
+		judgeRationale: "Judged.",
+		includedInReport,
+	};
+}
+
 function prepareReviewRun(
-	database: ReturnType<typeof createTestDatabase>,
+	database: TestDatabase,
 	reviewRunId: string,
 	pullRequestNumber = 30,
 ): void {

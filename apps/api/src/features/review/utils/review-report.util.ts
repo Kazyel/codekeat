@@ -7,14 +7,14 @@ import type { PublishableReviewReport, StoredFinding } from "../types/review-rep
 export function formatReviewReport(report: PublishableReviewReport): string {
 	const header = [
 		"## Codekeat — revisão consultiva",
-		`Commit: \`${report.headSha.slice(0, SHORT_COMMIT_SHA_LENGTH)}\``,
+		`**Escopo:** diff completo do PR no snapshot do HEAD \`${report.headSha.slice(0, SHORT_COMMIT_SHA_LENGTH)}\` — não apenas esse commit.`,
 	];
 	const content = report.findings.length === 0 ? noFindingsMessage() : findingsMessage(report);
 	return [...header, content, "Isso não substitui a revisão humana."].join("\n\n");
 }
 
 function noFindingsMessage(): string {
-	return "✅ Não encontramos problemas concretos neste commit.";
+	return "✅ Não encontramos problemas concretos no diff completo deste PR nesse snapshot.";
 }
 
 function findingsMessage(report: PublishableReviewReport): string {
@@ -22,7 +22,9 @@ function findingsMessage(report: PublishableReviewReport): string {
 		const findings = report.findings.filter((finding) => finding.severity === severity);
 		return findings.length === 0 ? [] : formatSeveritySection(report, severity, findings);
 	});
-	return ["Encontramos observações concretas:", ...sections].join("\n\n");
+	return ["Encontramos observações concretas no diff completo deste PR:", ...sections].join(
+		"\n\n",
+	);
 }
 
 function formatSeveritySection(

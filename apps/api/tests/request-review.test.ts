@@ -193,12 +193,17 @@ describe("requestReview", () => {
 			ignoreReason: null,
 			model: database.selectedModel,
 		});
-		database.reviewRunRepository.completeReviewRun(
-			"completed-run",
-			{ inputTokens: 1, outputTokens: 1, cacheTokens: 0, costUsdMicros: 1 },
-			[],
-			"report-1",
-		);
+		database.reviewRunRepository.completeReviewRun("completed-run", {
+			reviewUsage: { inputTokens: 1, outputTokens: 1, cacheTokens: 0, costUsdMicros: 1 },
+			judgeUsage: { inputTokens: 0, outputTokens: 0, cacheTokens: 0, costUsdMicros: 0 },
+			findings: [],
+			reviewReportId: "report-1",
+			reviewStrategyVersion: "judge-gate-v1",
+			changedLineCount: 1,
+			reviewChunkCount: 1,
+			judgeCallCount: 0,
+			processingDurationMs: 1,
+		});
 
 		const result = await requestReview(
 			{ ...REVIEW_REQUEST, trigger: "reopened" },

@@ -1,4 +1,4 @@
-import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 import { repositories } from "../github/repositories.js";
 import { reviewRuns } from "./review-runs.js";
@@ -25,11 +25,7 @@ export const reviewReports = sqliteTable(
 		publishedAt: text("published_at"),
 	},
 	(table) => [
-		uniqueIndex("review_reports_repository_pr_unique").on(
-			table.githubRepositoryId,
-			table.pullRequestNumber,
-		),
+		uniqueIndex("review_reports_review_run_id_unique").on(table.reviewRunId),
 		uniqueIndex("review_reports_github_comment_id_unique").on(table.githubCommentId),
-		index("review_reports_review_run_id_index").on(table.reviewRunId),
 	],
 );

@@ -5,6 +5,8 @@ import type { ReviewFinding } from "./review-run.types.js";
 export interface ReviewInputChunk {
 	readonly changedLines: ReadonlyMap<string, ReadonlySet<number>>;
 	readonly diff: string;
+	readonly referenceAfter: string;
+	readonly referenceBefore: string;
 	readonly index: number;
 	readonly total: number;
 }
@@ -29,6 +31,50 @@ export interface ReviewTokenUsage {
 export interface ReviewModelResult {
 	readonly findings: readonly ReviewFinding[];
 	readonly usage: ReviewTokenUsage;
+}
+export type FindingJudgment =
+	| { readonly kind: "approved"; readonly rationale: string }
+	| { readonly kind: "rejected"; readonly rationale: string }
+	| {
+			readonly kind: "severity_changed";
+			readonly severity: ReviewFinding["severity"];
+			readonly rationale: string;
+	  };
+
+export interface ReviewFindingEvidence {
+	readonly id: string;
+	readonly diff: string;
+	readonly referenceBefore: string;
+	readonly referenceAfter: string;
+}
+
+export interface ReviewFindingCandidate {
+	readonly evidenceId: string;
+	readonly finding: ReviewFinding;
+	readonly index: number;
+}
+
+export interface ReviewFindingJudgeInput {
+	readonly candidates: readonly ReviewFindingCandidate[];
+	readonly evidence: readonly ReviewFindingEvidence[];
+}
+
+export interface ReviewFindingJudgment {
+	readonly index: number;
+	readonly judgment: FindingJudgment;
+}
+
+export interface ReviewFindingJudgmentResult {
+	readonly judgments: readonly ReviewFindingJudgment[];
+	readonly usage: ReviewTokenUsage;
+}
+
+export interface ReviewFindingJudge {
+	judge(
+		model: ReviewModelConfiguration,
+		input: ReviewInput,
+		batch: ReviewFindingJudgeInput,
+	): Promise<ReviewFindingJudgmentResult>;
 }
 
 export type ReviewInputLoadResult =

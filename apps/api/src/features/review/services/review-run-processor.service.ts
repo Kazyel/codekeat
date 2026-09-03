@@ -6,23 +6,51 @@ import type { Logger } from "pino";
 import { ReviewModelResponseError } from "../errors/review-model.error.js";
 import type { ReviewRunRepository } from "../repositories/review-run.repository.js";
 import type {
+	FindingJudgment,
+	ReviewFindingJudge,
 	ReviewInput,
 	ReviewInputLoadResult,
 	ReviewInputSource,
 	ReviewModel,
+	ReviewTokenUsage,
 } from "../types/review-input.types.js";
 import type {
 	ReviewRunErrorCode,
 	RunnableReviewRun,
 	StoredFinding,
 } from "../types/review-repository.types.js";
-import type { ReviewFinding, ReviewResult, ReviewWorkQueue } from "../types/review-run.types.js";
+import type { ReviewFinding, ReviewWorkQueue } from "../types/review-run.types.js";
+import {
+	createReviewFindingJudgeBatches,
+	type ChunkFindingCandidate,
+	type ReviewFindingJudgeBatch,
+} from "../utils/review-finding-evidence.util.js";
+const REVIEW_STRATEGY_VERSION = "compact-judge-v3";
+const EMPTY_USAGE: ReviewTokenUsage = {
+	inputTokens: 0,
+	outputTokens: 0,
+	cacheTokens: 0,
+	costUsdMicros: 0,
+};
+
+interface CompletedReview {
+	readonly kind: "completed";
+	readonly findings: readonly StoredFinding[];
+	readonly reviewUsage: ReviewTokenUsage;
+	readonly judgeUsage: ReviewTokenUsage;
+	readonly judgeCallCount: number;
+}
+
+type ProcessReviewResult =
+	| CompletedReview
+	| { readonly kind: "failed"; readonly errorCode: ReviewRunErrorCode };
 
 export class ReviewRunProcessorService {
 	constructor(
 		private readonly repository: ReviewRunRepository,
 		private readonly inputSource: ReviewInputSource,
 		private readonly model: ReviewModel,
+		private readonly judge: ReviewFindingJudge,
 		private readonly queue: Pick<ReviewWorkQueue, "enqueueReport">,
 		private readonly logger: Logger,
 	) {}
@@ -39,15 +67,7 @@ export class ReviewRunProcessorService {
 		const inputResult = await this.loadInput(run);
 		if (inputResult.kind === "ignored") {
 			this.repository.ignoreReviewRun(reviewRunId, inputResult.ignoreReason);
-			this.logger.info(
-				{
-					durationMs: elapsedMilliseconds(startedAt),
-					modelName: run.model.apiName,
-					reason: inputResult.ignoreReason,
-					reviewRunId,
-				},
-				"review_run.ignored",
-			);
+			this.logIgnoredRun(run, inputResult.ignoreReason, startedAt);
 			return;
 		}
 
@@ -62,20 +82,25 @@ export class ReviewRunProcessorService {
 			return;
 		}
 
-		const storedFindings = toStoredFindings(reviewResult.findings);
-		const reviewReportId = this.repository.completeReviewRun(
-			reviewRunId,
-			reviewResult.usage,
-			storedFindings,
-			randomUUID(),
-		);
+		const durationMs = elapsedMilliseconds(startedAt);
+		const reviewReportId = this.repository.completeReviewRun(reviewRunId, {
+			reviewUsage: reviewResult.reviewUsage,
+			judgeUsage: reviewResult.judgeUsage,
+			findings: reviewResult.findings,
+			reviewReportId: randomUUID(),
+			reviewStrategyVersion: REVIEW_STRATEGY_VERSION,
+			changedLineCount: countChangedLines(inputResult.input),
+			reviewChunkCount: inputResult.input.chunks.length,
+			judgeCallCount: reviewResult.judgeCallCount,
+			processingDurationMs: durationMs,
+		});
 
 		await this.queue.enqueueReport(reviewReportId);
 		this.logger.info(
 			{
 				chunkCount: inputResult.input.chunks.length,
-				durationMs: elapsedMilliseconds(startedAt),
-				findingCount: storedFindings.length,
+				durationMs,
+				findingCount: reviewResult.findings.length,
 				modelName: run.model.apiName,
 				reviewRunId,
 			},
@@ -86,44 +111,128 @@ export class ReviewRunProcessorService {
 	private async review(
 		model: RunnableReviewRun["model"],
 		input: ReviewInput,
-	): Promise<ReviewResult> {
-		const findings: ReviewFinding[] = [];
+	): Promise<ProcessReviewResult> {
+		const generated = await this.generateCandidates(model, input);
+		if (generated.kind === "failed") {
+			return generated;
+		}
 
-		let inputTokens = 0;
-		let outputTokens = 0;
-		let cacheTokens = 0;
-		let costUsdMicros = 0;
+		const judged = await this.judgeCandidates(model, input, generated.candidates);
+		if (judged.kind === "failed") {
+			return judged;
+		}
+
+		return {
+			kind: "completed",
+			findings: judged.findings,
+			reviewUsage: roundUsageCost(generated.usage),
+			judgeUsage: roundUsageCost(judged.usage),
+			judgeCallCount: judged.callCount,
+		};
+	}
+
+	private async generateCandidates(
+		model: RunnableReviewRun["model"],
+		input: ReviewInput,
+	): Promise<
+		| {
+				readonly kind: "completed";
+				readonly candidates: readonly ChunkFindingCandidate[];
+				readonly usage: ReviewTokenUsage;
+		  }
+		| { readonly kind: "failed"; readonly errorCode: ReviewRunErrorCode }
+	> {
+		const candidates: ChunkFindingCandidate[] = [];
+		let usage = EMPTY_USAGE;
 
 		for (const chunk of input.chunks) {
 			const result = await this.reviewChunk(model, input, chunk);
 			if (result.kind === "failed") {
 				return result;
 			}
-
-			findings.push(...result.findings);
-			inputTokens += result.usage.inputTokens;
-			outputTokens += result.usage.outputTokens;
-			cacheTokens += result.usage.cacheTokens;
-			costUsdMicros += result.usage.costUsdMicros;
+			usage = addUsage(usage, result.usage);
+			candidates.push(...result.findings.map((finding) => ({ chunk, finding })));
 		}
 
-		return {
-			kind: "completed",
-			findings,
-			usage: {
-				inputTokens,
-				outputTokens,
-				cacheTokens,
-				costUsdMicros: Math.round(costUsdMicros),
-			},
-		};
+		return { kind: "completed", candidates: deduplicateCandidates(candidates), usage };
+	}
+
+	private async judgeCandidates(
+		model: RunnableReviewRun["model"],
+		input: ReviewInput,
+		candidates: readonly ChunkFindingCandidate[],
+	): Promise<
+		| {
+				readonly kind: "completed";
+				readonly findings: readonly StoredFinding[];
+				readonly usage: ReviewTokenUsage;
+				readonly callCount: number;
+		  }
+		| { readonly kind: "failed"; readonly errorCode: ReviewRunErrorCode }
+	> {
+		const batches = createReviewFindingJudgeBatches(candidates);
+		if (batches === null) {
+			return { kind: "failed", errorCode: "finding_location_invalid" };
+		}
+
+		let usage = EMPTY_USAGE;
+
+		const findings: StoredFinding[] = [];
+		for (const batch of batches) {
+			const result = await this.judgeBatch(model, input, batch);
+			if (result.kind === "failed") {
+				return result;
+			}
+			usage = addUsage(usage, result.usage);
+			findings.push(...result.findings);
+		}
+
+		return { kind: "completed", findings, usage, callCount: batches.length };
+	}
+
+	private async judgeBatch(
+		model: RunnableReviewRun["model"],
+		input: ReviewInput,
+		batch: ReviewFindingJudgeBatch,
+	): Promise<
+		| {
+				readonly kind: "completed";
+				readonly findings: readonly StoredFinding[];
+				readonly usage: ReviewTokenUsage;
+		  }
+		| { readonly kind: "failed"; readonly errorCode: ReviewRunErrorCode }
+	> {
+		try {
+			const result = await this.judge.judge(model, input, batch.input);
+
+			const judgments = validateJudgments(batch.findings, result.judgments);
+			if (judgments === null) {
+				return { kind: "failed", errorCode: "gemini_judge_invalid_response" };
+			}
+
+			return {
+				kind: "completed",
+				findings: batch.findings.map((finding, index) =>
+					toStoredFinding(finding, judgments[index]!),
+				),
+				usage: result.usage,
+			};
+		} catch (error) {
+			return {
+				kind: "failed",
+				errorCode:
+					error instanceof ReviewModelResponseError
+						? "gemini_judge_invalid_response"
+						: "gemini_judge_request_failed",
+			};
+		}
 	}
 
 	private async loadInput(run: RunnableReviewRun): Promise<ReviewInputLoadResult> {
 		try {
 			return await this.inputSource.load(run);
 		} catch {
-			return { kind: "failed" as const, errorCode: "github_diff_unavailable" as const };
+			return { kind: "failed", errorCode: "github_diff_unavailable" };
 		}
 	}
 
@@ -131,7 +240,14 @@ export class ReviewRunProcessorService {
 		model: RunnableReviewRun["model"],
 		input: ReviewInput,
 		chunk: ReviewInput["chunks"][number],
-	): Promise<ReviewResult> {
+	): Promise<
+		| {
+				readonly kind: "completed";
+				readonly findings: readonly ReviewFinding[];
+				readonly usage: ReviewTokenUsage;
+		  }
+		| { readonly kind: "failed"; readonly errorCode: ReviewRunErrorCode }
+	> {
 		try {
 			const result = await this.model.review(model, input, chunk);
 			if (!result.findings.every((finding) => isValidFinding(finding, chunk))) {
@@ -140,12 +256,26 @@ export class ReviewRunProcessorService {
 
 			return { kind: "completed", findings: result.findings, usage: result.usage };
 		} catch (error) {
-			if (error instanceof ReviewModelResponseError) {
-				return { kind: "failed", errorCode: "gemini_invalid_response" };
-			}
-
-			return { kind: "failed", errorCode: "gemini_request_failed" };
+			return {
+				kind: "failed",
+				errorCode:
+					error instanceof ReviewModelResponseError
+						? "gemini_invalid_response"
+						: "gemini_request_failed",
+			};
 		}
+	}
+
+	private logIgnoredRun(run: RunnableReviewRun, reason: string, startedAt: number): void {
+		this.logger.info(
+			{
+				durationMs: elapsedMilliseconds(startedAt),
+				modelName: run.model.apiName,
+				reason,
+				reviewRunId: run.id,
+			},
+			"review_run.ignored",
+		);
 	}
 
 	private fail(run: RunnableReviewRun, errorCode: ReviewRunErrorCode, startedAt: number): void {
@@ -160,6 +290,44 @@ export class ReviewRunProcessorService {
 			"review_run.failed",
 		);
 	}
+}
+
+function validateJudgments(
+	findings: readonly ReviewFinding[],
+	judgments: readonly { readonly index: number; readonly judgment: FindingJudgment }[],
+): readonly FindingJudgment[] | null {
+	if (judgments.length !== findings.length) {
+		return null;
+	}
+
+	const byIndex = new Map(judgments.map(({ index, judgment }) => [index, judgment]));
+	if (byIndex.size !== findings.length) {
+		return null;
+	}
+
+	const ordered: FindingJudgment[] = [];
+	for (const [index, finding] of findings.entries()) {
+		const judgment = byIndex.get(index);
+		if (!isValidIndexedJudgment(finding, judgment)) {
+			return null;
+		}
+		ordered.push(judgment);
+	}
+	return ordered;
+}
+
+function isValidIndexedJudgment(
+	finding: ReviewFinding,
+	judgment: FindingJudgment | undefined,
+): judgment is FindingJudgment {
+	return judgment !== undefined && isValidJudgment(finding, judgment);
+}
+
+function isValidJudgment(finding: ReviewFinding, judgment: FindingJudgment): boolean {
+	return (
+		judgment.rationale.trim().length > 0 &&
+		(judgment.kind !== "severity_changed" || judgment.severity !== finding.severity)
+	);
 }
 
 function isValidFinding(finding: ReviewFinding, chunk: ReviewInput["chunks"][number]): boolean {
@@ -178,26 +346,55 @@ function hasValidContent(finding: ReviewFinding): boolean {
 	);
 }
 
-function toStoredFindings(findings: readonly ReviewFinding[]): readonly StoredFinding[] {
-	const uniqueFindings = new Map<string, ReviewFinding>();
-	for (const finding of findings) {
-		uniqueFindings.set(findingKey(finding), finding);
+function deduplicateCandidates(
+	candidates: readonly ChunkFindingCandidate[],
+): readonly ChunkFindingCandidate[] {
+	const unique = new Map<string, ChunkFindingCandidate>();
+	for (const candidate of candidates) {
+		const key = `${candidate.finding.path}:${candidate.finding.line}:${candidate.finding.title}`;
+		if (!unique.has(key)) {
+			unique.set(key, candidate);
+		}
 	}
-
-	const persistableFindings = new Map<string, ReviewFinding>();
-	for (const finding of uniqueFindings.values()) {
-		persistableFindings.set(persistenceKey(finding), finding);
-	}
-
-	return [...persistableFindings.values()].map((finding) => ({ ...finding, id: randomUUID() }));
+	return [...unique.values()];
 }
 
-function findingKey(finding: ReviewFinding): string {
-	return `${finding.severity}:${finding.path}:${finding.line}:${finding.title}:${finding.rationale}`;
+function toStoredFinding(finding: ReviewFinding, judgment: FindingJudgment): StoredFinding {
+	return {
+		...finding,
+		id: randomUUID(),
+		judgeVerdict: judgment.kind,
+		judgeSeverity: judgment.kind === "severity_changed" ? judgment.severity : null,
+		judgeRationale: judgment.rationale,
+		includedInReport: judgment.kind !== "rejected",
+	};
 }
 
-function persistenceKey(finding: ReviewFinding): string {
-	return `${finding.path}:${finding.line}:${finding.title}`;
+function addUsage(first: ReviewTokenUsage, second: ReviewTokenUsage): ReviewTokenUsage {
+	return {
+		inputTokens: first.inputTokens + second.inputTokens,
+		outputTokens: first.outputTokens + second.outputTokens,
+		cacheTokens: first.cacheTokens + second.cacheTokens,
+		costUsdMicros: first.costUsdMicros + second.costUsdMicros,
+	};
+}
+
+function roundUsageCost(usage: ReviewTokenUsage): ReviewTokenUsage {
+	return { ...usage, costUsdMicros: Math.round(usage.costUsdMicros) };
+}
+
+function countChangedLines(input: ReviewInput): number {
+	const linesByPath = new Map<string, Set<number>>();
+	for (const chunk of input.chunks) {
+		for (const [path, lines] of chunk.changedLines) {
+			const combined = linesByPath.get(path) ?? new Set<number>();
+			for (const line of lines) {
+				combined.add(line);
+			}
+			linesByPath.set(path, combined);
+		}
+	}
+	return [...linesByPath.values()].reduce((total, lines) => total + lines.size, 0);
 }
 
 function elapsedMilliseconds(startedAt: number): number {
