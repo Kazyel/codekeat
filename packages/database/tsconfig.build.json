@@ -1,11 +1,11 @@
 {
-  "extends": "./tsconfig.json",
-  "compilerOptions": {
-    "noEmit": false,
-    "rootDir": "src",
-    "outDir": "dist",
-    "tsBuildInfoFile": ".cache/tsbuildinfo/database-build.tsbuildinfo"
-  },
-  "include": ["src/**/*.ts"],
-  "exclude": ["node_modules", "dist", "drizzle"]
+	"extends": "./tsconfig.json",
+	"compilerOptions": {
+		"noEmit": false,
+		"rootDir": "src",
+		"outDir": "dist",
+		"tsBuildInfoFile": ".cache/tsbuildinfo/database-build.tsbuildinfo"
+	},
+	"include": ["src/**/*.ts"],
+	"exclude": ["node_modules", "dist", "drizzle"]
 }

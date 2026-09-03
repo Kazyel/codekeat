@@ -9,40 +9,67 @@ consultivo. Não há serviços distribuídos, broker de filas ou quality gate bl
 ## Visão geral
 
 ```text
-GitHub webhook -> GitHub adapter -> Review module -> fila local -> AI model port -> Gemini adapter
-                                         |                               |              |
-                                         v                               v              v
-                              SQLite (runs, findings, policy)      Findings tipados  Takeat MCP
+GitHub webhook -> github/controllers -> core/workflows -> review/services -> ReviewModel
+                                         |                    |
+                                         v                    v
+                             repository-policy/services   Findings + Review Report
 
-Web application -------------------------> API interna de leitura e autenticação
+review contracts <- github/services
+review contracts <- integrations/gemini -> integrations/takeat-mcp
+
+Web application -> APIs públicas de auth e review
 ```
+
+O [mapa de contextos](../CONTEXT-MAP.md) define Review, Repository Policy, GitHub Integration e
+Dashboard Identity. A API implementa esses contextos nas features `review`, `repository-policy`,
+`github` e `auth`.
 
 ## Limites
 
-| Área                | Responsabilidade                                            | Não deve conhecer                |
-| ------------------- | ----------------------------------------------------------- | -------------------------------- |
-| `review`            | Orquestrar um Review Run e produzir Findings                | Probot, Octokit, Gemini, Drizzle |
-| `repository-policy` | Resolver e validar a Repository Policy                      | Detalhes do modelo de IA         |
-| `github`            | Receber eventos e obter o diff e contexto do PR             | Regras de negócio de Review      |
-| `ai`                | Adaptar um provedor de modelo ao contrato de análise        | HTTP/GitHub/SQLite               |
-| `database`          | Persistir o estado do Codekeat                              | Lógica de orquestração           |
-| `web`               | Autenticar pessoas e exibir histórico e detalhes de Reviews | Webhooks, SDKs de IA e SQLite    |
+| Área                | Responsabilidade                                                    | Não deve conhecer                          |
+| ------------------- | ------------------------------------------------------------------- | ------------------------------------------ |
+| `review`            | Review Run, Review Input, Review Model, Finding e Review Report     | Probot, Gemini, MCP ou detalhes do GitHub  |
+| `repository-policy` | Validar e resolver Repository Policy                                | Orquestração de Review ou Octokit          |
+| `github`            | Webhooks, installations, repository access e serviços GitHub        | Implementações internas de outras features |
+| `auth`              | Dashboard User, Dashboard Session e métodos de identidade isolados  | Installation ou credenciais do GitHub App  |
+| `core/workflows`    | Coordenar APIs públicas de múltiplas features                       | Implementações internas das features       |
+| `integrations`      | Implementar contratos para Gemini, Takeat MCP e serviços externos   | Controllers ou repositories concretos      |
+| `shared`            | Código técnico puro, nomeado por responsabilidade e realmente comum | Features, integrations ou workflows        |
+| `database`          | Migrations e schemas agrupados por feature                          | Casos de uso ou lógica de orquestração     |
+| `bootstrap`         | Compor controllers, services, repositories, integrations e workflow | Regras de decisão                          |
+| `web`               | Autenticar pessoas e exibir histórico e detalhes de Reviews         | Webhooks, SDKs de IA ou SQLite             |
 
-O diretório inicial da API deve refletir esses limites em módulos verticais. Código de domínio e
-orquestração fica nos módulos; Probot, Octokit, Gemini e Drizzle ficam nos adaptadores nas bordas.
-Não criar camadas genéricas, repositórios abstratos ou módulos compartilhados sem variação real.
+Cada feature usa somente as categorias convencionais necessárias: `controllers`, `services`,
+`repositories`, `types`, `constants`, `utils` e `errors`. O `index.ts` na raiz é sua API pública;
+arquivos de implementação não ficam soltos na raiz da feature.
+
+Imports dentro do mesmo módulo são relativos. Imports entre módulos usam `#features/*`,
+`#integrations/*`, `#shared/*` ou `#core/workflows/*` e nunca apontam para arquivos internos.
+Features não importam workflows. `core/workflows` coordena as APIs públicas; `bootstrap` faz a
+composição manual sem container de injeção.
+
+`shared` não é um diretório genérico de conveniência. Um módulo compartilhado precisa ter
+responsabilidade específica, ser neutro ao domínio e atender mais de um consumidor real. Os módulos
+atuais são `#shared/http` e `#shared/database`; não existem `utils`, `services` ou `controllers`
+globais.
+
+Gemini e Takeat MCP ficam em `integrations` porque implementam bordas externas. Integrações podem
+depender de contratos públicos das features, mas não de controllers ou repositories concretos.
+
+Constantes de módulo e valores mágicos extraídos usam `UPPER_SNAKE_CASE`. Variáveis locais imutáveis
+continuam em `camelCase`; `const` por si só não transforma uma variável local em constante nomeada.
 
 ## Fluxo de um Review
 
-1. Um evento elegível de pull request chega pelo adaptador GitHub.
-2. O adaptador deduplica pela entrega e pelo SHA do commit antes de iniciar outro Review Run.
-3. A API lê a Repository Policy da branch padrão e persiste o Review Run como `queued`.
+1. Um evento elegível de pull request chega pelo controller GitHub.
+2. O serviço de webhook deduplica pela entrega e pelo SHA do commit antes de iniciar outro Review Run.
+3. O serviço GitHub lê a Repository Policy da branch padrão e o workflow persiste o Review Run como `queued`.
 4. A fila local agenda o processamento com concorrência global de um, sem atrasar a resposta HTTP.
 5. O processador reivindica somente runs `queued`, muda-os para `running` e obtém o PR atual como a Installation.
 6. Se o SHA mudou, o run fica `ignored` com `superseded_head_sha`; caso contrário, o diff completo é
    dividido em Review Chunks de até 100.000 caracteres.
-7. O provedor de IA recebe os chunks sequencialmente, consulta código e histórico técnico pelo adaptador
-   MCP filtrado quando necessário e devolve Findings tipados, localizados em linhas adicionadas do chunk.
+7. O serviço Gemini recebe os chunks sequencialmente, consulta código e histórico técnico pela integração
+   Takeat MCP filtrada quando necessário e devolve Findings tipados, localizados em linhas adicionadas do chunk.
 8. A API valida, deduplica e persiste todos os Findings e um Review Report pendente com a transição
    atômica para `completed`.
 9. A fila atualiza um comentário consultivo único do Codekeat no PR; sem Findings, publica a confirmação
@@ -59,9 +86,9 @@ antes de um reinício.
 
 ### Modelos de IA
 
-Definir um único contrato interno de modelo, por exemplo `ReviewModel`, com entrada e saída concretas.
-O adaptador Gemini é a primeira implementação. Um novo modelo entra por outro adaptador, sem alterar
-o módulo `review` nem os dados persistidos.
+Definir um único contrato interno de modelo, `ReviewModel`, com entrada e saída concretas.
+`GeminiReviewService`, em `integrations/gemini`, é a primeira implementação. Um novo modelo entra por
+outra integração, sem alterar o módulo `review` nem os dados persistidos.
 
 ### Política por repositório
 

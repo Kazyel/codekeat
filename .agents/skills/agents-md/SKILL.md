@@ -10,14 +10,14 @@ Goal: concise, actionable agent instructions. Target under 60 lines; never excee
 ## Workflow
 
 1. Inspect before writing:
-   - package manager: lock files and manifests
-   - commands: `package.json`, `Makefile`, task runners, CI workflows
-   - docs/specs/policies: `README.md`, `CONTRIBUTING.md`, `docs/`, `specs/`, `policies/`, `SECURITY.md`, `.github/`
-   - conventions: current code patterns, test layout, generated files, legacy areas to avoid
+    - package manager: lock files and manifests
+    - commands: `package.json`, `Makefile`, task runners, CI workflows
+    - docs/specs/policies: `README.md`, `CONTRIBUTING.md`, `docs/`, `specs/`, `policies/`, `SECURITY.md`, `.github/`
+    - conventions: current code patterns, test layout, generated files, legacy areas to avoid
 2. Choose scope:
-   - root `AGENTS.md`: repo-wide defaults
-   - nested `AGENTS.md`: only when a subtree has different commands or rules
-   - closest instruction file wins; keep narrower files shorter than root files
+    - root `AGENTS.md`: repo-wide defaults
+    - nested `AGENTS.md`: only when a subtree has different commands or rules
+    - closest instruction file wins; keep narrower files shorter than root files
 3. Write the smallest useful file.
 4. Verify exact paths and commands exist.
 

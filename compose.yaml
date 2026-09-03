@@ -1,78 +1,78 @@
 name: codekeat
 
 services:
-  api:
-    image: ${API_IMAGE:-codekeat-api:local}
-    build:
-      context: .
-      dockerfile: apps/api/Dockerfile
-    init: true
-    restart: unless-stopped
-    env_file:
-      - path: ./apps/api/.env
-        required: false
-    environment:
-      NODE_ENV: production
-      PORT: 3001
-      HOST: 0.0.0.0
-      DATABASE_PATH: /app/data/codekeat.db
-      REVIEW_MODE: ${REVIEW_MODE:-advisory}
-    ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${API_PORT:-3001}:3001"
-    volumes:
-      - ${CODEKEAT_DATA_DIR:-./packages/database/data}:/app/data
-    read_only: true
-    tmpfs:
-      - /tmp:size=64m,mode=1777
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    stop_grace_period: 30s
-    logging:
-      driver: json-file
-      options:
-        max-size: 10m
-        max-file: "3"
-    networks:
-      - codekeat
+    api:
+        image: ${API_IMAGE:-codekeat-api:local}
+        build:
+            context: .
+            dockerfile: apps/api/Dockerfile
+        init: true
+        restart: unless-stopped
+        env_file:
+            - path: ./apps/api/.env
+              required: false
+        environment:
+            NODE_ENV: production
+            PORT: 3001
+            HOST: 0.0.0.0
+            DATABASE_PATH: /app/data/codekeat.db
+            REVIEW_MODE: ${REVIEW_MODE:-advisory}
+        ports:
+            - "${BIND_ADDRESS:-127.0.0.1}:${API_PORT:-3001}:3001"
+        volumes:
+            - ${CODEKEAT_DATA_DIR:-./packages/database/data}:/app/data
+        read_only: true
+        tmpfs:
+            - /tmp:size=64m,mode=1777
+        cap_drop:
+            - ALL
+        security_opt:
+            - no-new-privileges:true
+        stop_grace_period: 30s
+        logging:
+            driver: json-file
+            options:
+                max-size: 10m
+                max-file: "3"
+        networks:
+            - codekeat
 
-  web:
-    image: ${WEB_IMAGE:-codekeat-web:local}
-    build:
-      context: .
-      dockerfile: apps/web/Dockerfile
-      args:
-        NEXT_PUBLIC_APP_NAME: ${NEXT_PUBLIC_APP_NAME:-Codekeat}
-        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}
-    init: true
-    restart: unless-stopped
-    env_file:
-      - path: ./apps/web/.env
-        required: false
-    environment:
-      NODE_ENV: production
-      PORT: 3501
-      HOSTNAME: 0.0.0.0
-      CODEKEAT_API_URL: http://api:3001
-    ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${WEB_PORT:-3501}:3501"
-    read_only: true
-    tmpfs:
-      - /tmp:size=64m,mode=1777
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    stop_grace_period: 30s
-    logging:
-      driver: json-file
-      options:
-        max-size: 10m
-        max-file: "3"
-    networks:
-      - codekeat
+    web:
+        image: ${WEB_IMAGE:-codekeat-web:local}
+        build:
+            context: .
+            dockerfile: apps/web/Dockerfile
+            args:
+                NEXT_PUBLIC_APP_NAME: ${NEXT_PUBLIC_APP_NAME:-Codekeat}
+                NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}
+        init: true
+        restart: unless-stopped
+        env_file:
+            - path: ./apps/web/.env
+              required: false
+        environment:
+            NODE_ENV: production
+            PORT: 3501
+            HOSTNAME: 0.0.0.0
+            CODEKEAT_API_URL: http://api:3001
+        ports:
+            - "${BIND_ADDRESS:-127.0.0.1}:${WEB_PORT:-3501}:3501"
+        read_only: true
+        tmpfs:
+            - /tmp:size=64m,mode=1777
+        cap_drop:
+            - ALL
+        security_opt:
+            - no-new-privileges:true
+        stop_grace_period: 30s
+        logging:
+            driver: json-file
+            options:
+                max-size: 10m
+                max-file: "3"
+        networks:
+            - codekeat
 
 networks:
-  codekeat:
-    driver: bridge
+    codekeat:
+        driver: bridge

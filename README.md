@@ -184,4 +184,4 @@ pnpm docker:config
 
 - [Arquitetura](docs/architecture.md)
 - [GitHub App](docs/github-app.md)
-- [Linguagem do domínio](CONTEXT.md)
+- [Mapa e linguagem dos contextos](CONTEXT-MAP.md)
