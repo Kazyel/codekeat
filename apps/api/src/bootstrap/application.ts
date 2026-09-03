@@ -13,6 +13,7 @@ import {
 	DashboardAuthService,
 } from "#features/auth";
 import {
+	createGitHubConnectionReadController,
 	GitHubAccessRepository,
 	GitHubReviewInputService,
 	GitHubReviewPublicationService,
@@ -134,8 +135,15 @@ export async function configureApplication(
 		});
 
 		/*
-			Endpoints de leitura de revisões, uso de tokens, modelos e autenticação do dashboard.
+			Endpoints de leitura de conexões GitHub, revisões, uso de tokens, modelos e autenticação do dashboard.
 		*/
+		options.addHandler(
+			createGitHubConnectionReadController(
+				githubAccessRepository,
+				environment.allowedGithubAccounts,
+				environment.dashboardApiToken,
+			),
+		);
 		options.addHandler(
 			createReviewReadController(reviewQueryRepository, environment.dashboardApiToken),
 		);

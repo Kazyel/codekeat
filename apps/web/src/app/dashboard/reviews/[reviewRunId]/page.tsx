@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import type { ReactNode } from "react";
-import { BrandLockup } from "../../../brand-lockup";
 
 import { loadReviewRun } from "../../../lib/api-client";
 import { readSession } from "../../../lib/session";
@@ -26,37 +25,28 @@ export default async function ReviewDetailPage({
 	}
 
 	return (
-		<main className="shell">
+		<>
 			<Link className="back-link" href="/dashboard">
 				← Todas as análises
 			</Link>
-			<header className="review-header">
-				<div className="page-title">
-					<BrandLockup />
-					<div>
-						<p className="eyebrow">{reviewRun.repositoryFullName}</p>
-						<h1>PR #{reviewRun.pullRequestNumber}</h1>
-						<div className="review-facts">
-							<code>{reviewRun.headSha.slice(0, 7)}</code>
-							<span>{reviewRun.status}</span>
-							<span>{reviewRun.findingCount} findings</span>
-							{reviewRun.reviewStrategyVersion === null ? null : (
-								<span>{reviewRun.reviewStrategyVersion}</span>
-							)}
-							{reviewRun.errorCode === null ? null : (
-								<span>Falha: {reviewRun.errorCode}</span>
-							)}
-							{reviewRun.githubCommentUrl === null ? null : (
-								<a
-									href={reviewRun.githubCommentUrl}
-									rel="noreferrer"
-									target="_blank"
-								>
-									Ver comentário no GitHub
-								</a>
-							)}
-						</div>
-					</div>
+			<header className="content-header">
+				<p className="eyebrow">{reviewRun.repositoryFullName}</p>
+				<h1>PR #{reviewRun.pullRequestNumber}</h1>
+				<div className="review-facts">
+					<code>{reviewRun.headSha.slice(0, 7)}</code>
+					<span>{reviewRun.status}</span>
+					<span>{reviewRun.findingCount} findings</span>
+					{reviewRun.reviewStrategyVersion === null ? null : (
+						<span>{reviewRun.reviewStrategyVersion}</span>
+					)}
+					{reviewRun.errorCode === null ? null : (
+						<span>Falha: {reviewRun.errorCode}</span>
+					)}
+					{reviewRun.githubCommentUrl === null ? null : (
+						<a href={reviewRun.githubCommentUrl} rel="noreferrer" target="_blank">
+							Ver comentário no GitHub
+						</a>
+					)}
 				</div>
 			</header>
 
@@ -108,6 +98,6 @@ export default async function ReviewDetailPage({
 					))}
 				</section>
 			)}
-		</main>
+		</>
 	);
 }

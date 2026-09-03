@@ -74,13 +74,13 @@ export function ReviewUsageDetails({
 	);
 }
 
-function LocalDateTime({
+export function LocalDateTime({
 	prefix = "",
 	value,
 }: {
 	readonly prefix?: string;
 	readonly value: string;
-}) {
+}): ReactNode {
 	const hydrated = useSyncExternalStore(
 		subscribeToHydration,
 		readBrowserSnapshot,
