@@ -7,9 +7,11 @@ import {
 	type ReviewFinding,
 	type ReviewInput,
 	type ReviewInputSource,
+	type ReviewInputLoadResult,
 	ReviewModelResponseError,
 	type ReviewModel,
 	type ReviewModelResult,
+	type RunnableReviewRun,
 	ReviewRunProcessorService,
 	type ReviewWorkQueue,
 } from "#features/review";
@@ -23,9 +25,10 @@ describe("ReviewRunProcessorService", () => {
 	it("claims a queued run, processes chunks sequentially, and persists findings", async () => {
 		const database = createReviewRun();
 		const model = new RecordedModel([VALID_FINDING, VALID_FINDING]);
+		const inputSource = new ReadyInputSource(TWO_CHUNK_INPUT);
 		const processor = new ReviewRunProcessorService(
 			database.reviewRunRepository,
-			new ReadyInputSource(TWO_CHUNK_INPUT),
+			inputSource,
 			model,
 			new RecordedQueue(),
 			LOGGER,
@@ -34,6 +37,7 @@ describe("ReviewRunProcessorService", () => {
 		await processor.process(REVIEW_RUN_ID);
 
 		expect(model.chunkIndexes).toEqual([1, 2]);
+		expect(inputSource.githubInstallationAccountLogins).toEqual(["takeat"]);
 		expect(model.modelNames).toEqual(["gemini-3.8-flash", "gemini-3.8-flash"]);
 		expect(database.connection.db.select().from(findings).all()).toHaveLength(1);
 		expect(readRun(database)).toMatchObject({
@@ -131,9 +135,12 @@ describe("ReviewRunProcessorService", () => {
 });
 
 class ReadyInputSource implements ReviewInputSource {
+	readonly githubInstallationAccountLogins: string[] = [];
+
 	constructor(private readonly input: ReviewInput) {}
 
-	async load() {
+	async load(run: RunnableReviewRun): Promise<ReviewInputLoadResult> {
+		this.githubInstallationAccountLogins.push(run.githubInstallationAccountLogin);
 		return { kind: "ready" as const, input: this.input };
 	}
 }
@@ -241,6 +248,7 @@ const ONE_CHUNK_INPUT: ReviewInput = {
 		},
 	],
 	headSha: HEAD_SHA,
+	githubInstallationAccountLogin: "TakeatGD",
 	pullRequestNumber: 30,
 	repositoryFullName: "takeat/codekeat",
 	reviewRunId: REVIEW_RUN_ID,

@@ -48,6 +48,7 @@ export interface ExistingReviewRun {
 export interface RunnableReviewRun {
 	readonly id: string;
 	readonly githubInstallationId: number;
+	readonly githubInstallationAccountLogin: string;
 	readonly repositoryOwner: string;
 	readonly repositoryName: string;
 	readonly repositoryFullName: string;

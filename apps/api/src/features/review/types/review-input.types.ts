@@ -13,6 +13,7 @@ export interface ReviewInput {
 	readonly body: string | null;
 	readonly chunks: readonly ReviewInputChunk[];
 	readonly headSha: string;
+	readonly githubInstallationAccountLogin: string;
 	readonly pullRequestNumber: number;
 	readonly repositoryFullName: string;
 	readonly reviewRunId: string;

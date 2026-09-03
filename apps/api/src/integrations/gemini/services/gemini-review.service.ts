@@ -15,6 +15,8 @@ import {
 
 import { MAXIMUM_REMOTE_MCP_CALLS } from "../constants/gemini.constants.js";
 
+const TAKEAT_GITHUB_ACCOUNT_LOGIN = "takeatgd";
+
 const REVIEW_RESPONSE_SCHEMA = z
 	.object({
 		findings: z.array(
@@ -83,6 +85,9 @@ export class GeminiReviewService implements ReviewModel {
 		chunk: ReviewInputChunk,
 	): Promise<ReviewModelResult> {
 		const prompt = createPrompt(input, chunk);
+		if (input.githubInstallationAccountLogin.toLowerCase() !== TAKEAT_GITHUB_ACCOUNT_LOGIN) {
+			return this.generateReview(model, prompt, null);
+		}
 
 		try {
 			return await this.generateReview(model, prompt, this.takeatMcpTool);

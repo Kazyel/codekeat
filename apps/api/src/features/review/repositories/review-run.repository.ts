@@ -1,4 +1,10 @@
-import { findings, repositories, reviewRuns, type DatabaseConnection } from "@codekeat/database";
+import {
+	findings,
+	installations,
+	repositories,
+	reviewRuns,
+	type DatabaseConnection,
+} from "@codekeat/database";
 import { and, eq, sql } from "drizzle-orm";
 import { currentTimestamp } from "#shared/database";
 import type { ReviewTokenUsage } from "../types/review-input.types.js";
@@ -116,6 +122,7 @@ export class ReviewRunRepository {
 			.select({
 				id: reviewRuns.id,
 				githubInstallationId: repositories.installationId,
+				githubInstallationAccountLogin: installations.accountLogin,
 				repositoryOwner: repositories.ownerLogin,
 				repositoryName: repositories.name,
 				repositoryFullName: sql<string>`${repositories.ownerLogin} || '/' || ${repositories.name}`,
@@ -132,6 +139,10 @@ export class ReviewRunRepository {
 				repositories,
 				eq(reviewRuns.githubRepositoryId, repositories.githubRepositoryId),
 			)
+			.innerJoin(
+				installations,
+				eq(repositories.installationId, installations.githubInstallationId),
+			)
 			.where(eq(reviewRuns.id, reviewRunId))
 			.get();
 
@@ -141,6 +152,7 @@ export class ReviewRunRepository {
 
 		return {
 			id: row.id,
+			githubInstallationAccountLogin: row.githubInstallationAccountLogin,
 			githubInstallationId: row.githubInstallationId,
 			repositoryOwner: row.repositoryOwner,
 			repositoryName: row.repositoryName,

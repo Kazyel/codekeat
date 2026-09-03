@@ -65,6 +65,7 @@ const INPUT: ReviewInput = {
 	body: null,
 	chunks: [CHUNK],
 	headSha: "head-sha",
+	githubInstallationAccountLogin: "TakeatGD",
 	pullRequestNumber: 42,
 	repositoryFullName: "takeat/example",
 	reviewRunId: "review-run-id",
@@ -94,6 +95,28 @@ describe("GeminiReviewService", () => {
 					/tente refutá-lo[\s\S]*cenário alcançável[\s\S]*ordem de execução válida/,
 				),
 				config: expect.objectContaining({ seed: 1, temperature: 0 }),
+			}),
+		);
+	});
+
+	it("does not provide the Takeat MCP to reviews from another installation", async () => {
+		GENERATE_CONTENT.mockResolvedValueOnce(RESPONSE);
+		const model = new GeminiReviewService(
+			"google-api-key",
+			TAKEAT_MCP_TOOL,
+			pino({ level: "silent" }),
+		);
+
+		await expect(
+			model.review(MODEL, { ...INPUT, githubInstallationAccountLogin: "Kazyel" }, CHUNK),
+		).resolves.toEqual(EXPECTED_RESULT);
+
+		expect(GENERATE_CONTENT).toHaveBeenCalledWith(
+			expect.objectContaining({
+				config: expect.not.objectContaining({
+					automaticFunctionCalling: expect.anything(),
+					tools: expect.anything(),
+				}),
 			}),
 		);
 	});
