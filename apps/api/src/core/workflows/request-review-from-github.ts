@@ -6,6 +6,7 @@ import {
 	ReviewRunRepository,
 	type ReviewWorkQueue,
 } from "#features/review";
+import type { ModelCatalogRepository } from "../../features/models/index.js";
 import {
 	GitHubAccessRepository,
 	GitHubRepositoryPolicyService,
@@ -18,6 +19,7 @@ import {
 export interface GitHubReviewEvent {
 	readonly delivery: WebhookDelivery;
 	readonly isDraft: boolean;
+	readonly pullRequestState: "open" | "closed";
 	readonly request: RequestReview | null;
 }
 
@@ -27,6 +29,7 @@ export interface GitHubReviewWorkflowDependencies {
 	readonly policyService: GitHubRepositoryPolicyService;
 	readonly accessRepository: GitHubAccessRepository;
 	readonly reportRepository: ReviewReportRepository;
+	readonly modelRepository: ModelCatalogRepository;
 	readonly runRepository: ReviewRunRepository;
 	readonly queue: ReviewWorkQueue;
 }
@@ -51,7 +54,11 @@ export async function requestReviewFromGithub(
 			}
 
 			const ignoreReason = preparePullRequestRepository(
-				{ isDraft: event.isDraft, request: event.request },
+				{
+					isDraft: event.isDraft,
+					pullRequestState: event.pullRequestState,
+					request: event.request,
+				},
 				dependencies,
 			);
 			if (ignoreReason !== null) {
@@ -65,6 +72,7 @@ export async function requestReviewFromGithub(
 			});
 			const result = await requestReview(event.request, policy, {
 				runRepository: dependencies.runRepository,
+				modelRepository: dependencies.modelRepository,
 				reportRepository: dependencies.reportRepository,
 				queue: dependencies.queue,
 			});
@@ -78,9 +86,17 @@ export async function requestReviewFromGithub(
 }
 
 export function preparePullRequestRepository(
-	event: { readonly isDraft: boolean; readonly request: RequestReview },
+	event: {
+		readonly isDraft: boolean;
+		readonly pullRequestState: "open" | "closed";
+		readonly request: RequestReview;
+	},
 	dependencies: Pick<GitHubReviewWorkflowDependencies, "accessRepository" | "allowedAccounts">,
 ): string | null {
+	if (event.pullRequestState === "closed") {
+		return "closed_pull_request";
+	}
+
 	if (event.isDraft) {
 		return "draft_pull_request";
 	}

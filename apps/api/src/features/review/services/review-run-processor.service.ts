@@ -16,7 +16,7 @@ import type {
 	RunnableReviewRun,
 	StoredFinding,
 } from "../types/review-repository.types.js";
-import type { ReviewFinding, ReviewWorkQueue } from "../types/review-run.types.js";
+import type { ReviewFinding, ReviewResult, ReviewWorkQueue } from "../types/review-run.types.js";
 
 export class ReviewRunProcessorService {
 	constructor(
@@ -34,7 +34,7 @@ export class ReviewRunProcessorService {
 		}
 
 		const startedAt = performance.now();
-		this.logger.info({ modelName: this.model.name, reviewRunId }, "review_run.started");
+		this.logger.info({ modelName: run.model.apiName, reviewRunId }, "review_run.started");
 
 		const inputResult = await this.loadInput(run);
 		if (inputResult.kind === "ignored") {
@@ -42,7 +42,7 @@ export class ReviewRunProcessorService {
 			this.logger.info(
 				{
 					durationMs: elapsedMilliseconds(startedAt),
-					modelName: this.model.name,
+					modelName: run.model.apiName,
 					reason: inputResult.ignoreReason,
 					reviewRunId,
 				},
@@ -52,20 +52,20 @@ export class ReviewRunProcessorService {
 		}
 
 		if (inputResult.kind === "failed") {
-			this.fail(reviewRunId, inputResult.errorCode, startedAt);
+			this.fail(run, inputResult.errorCode, startedAt);
 			return;
 		}
 
-		const reviewResult = await this.review(inputResult.input);
+		const reviewResult = await this.review(run.model, inputResult.input);
 		if (reviewResult.kind === "failed") {
-			this.fail(reviewRunId, reviewResult.errorCode, startedAt);
+			this.fail(run, reviewResult.errorCode, startedAt);
 			return;
 		}
 
 		const storedFindings = toStoredFindings(reviewResult.findings);
 		const reviewReportId = this.repository.completeReviewRun(
 			reviewRunId,
-			this.model.name,
+			reviewResult.usage,
 			storedFindings,
 			randomUUID(),
 		);
@@ -76,26 +76,47 @@ export class ReviewRunProcessorService {
 				chunkCount: inputResult.input.chunks.length,
 				durationMs: elapsedMilliseconds(startedAt),
 				findingCount: storedFindings.length,
-				modelName: this.model.name,
+				modelName: run.model.apiName,
 				reviewRunId,
 			},
 			"review_run.completed",
 		);
 	}
 
-	private async review(input: ReviewInput): Promise<ReviewResult> {
+	private async review(
+		model: RunnableReviewRun["model"],
+		input: ReviewInput,
+	): Promise<ReviewResult> {
 		const findings: ReviewFinding[] = [];
 
+		let inputTokens = 0;
+		let outputTokens = 0;
+		let cacheTokens = 0;
+		let costUsdMicros = 0;
+
 		for (const chunk of input.chunks) {
-			const result = await this.reviewChunk(input, chunk);
+			const result = await this.reviewChunk(model, input, chunk);
 			if (result.kind === "failed") {
 				return result;
 			}
 
 			findings.push(...result.findings);
+			inputTokens += result.usage.inputTokens;
+			outputTokens += result.usage.outputTokens;
+			cacheTokens += result.usage.cacheTokens;
+			costUsdMicros += result.usage.costUsdMicros;
 		}
 
-		return { kind: "completed", findings };
+		return {
+			kind: "completed",
+			findings,
+			usage: {
+				inputTokens,
+				outputTokens,
+				cacheTokens,
+				costUsdMicros: Math.round(costUsdMicros),
+			},
+		};
 	}
 
 	private async loadInput(run: RunnableReviewRun): Promise<ReviewInputLoadResult> {
@@ -107,16 +128,17 @@ export class ReviewRunProcessorService {
 	}
 
 	private async reviewChunk(
+		model: RunnableReviewRun["model"],
 		input: ReviewInput,
 		chunk: ReviewInput["chunks"][number],
 	): Promise<ReviewResult> {
 		try {
-			const findings = await this.model.review(input, chunk);
-			if (!findings.every((finding) => isValidFinding(finding, chunk))) {
+			const result = await this.model.review(model, input, chunk);
+			if (!result.findings.every((finding) => isValidFinding(finding, chunk))) {
 				return { kind: "failed", errorCode: "finding_location_invalid" };
 			}
 
-			return { kind: "completed", findings };
+			return { kind: "completed", findings: result.findings, usage: result.usage };
 		} catch (error) {
 			if (error instanceof ReviewModelResponseError) {
 				return { kind: "failed", errorCode: "gemini_invalid_response" };
@@ -126,23 +148,19 @@ export class ReviewRunProcessorService {
 		}
 	}
 
-	private fail(reviewRunId: string, errorCode: ReviewRunErrorCode, startedAt: number): void {
-		this.repository.failReviewRun(reviewRunId, errorCode);
+	private fail(run: RunnableReviewRun, errorCode: ReviewRunErrorCode, startedAt: number): void {
+		this.repository.failReviewRun(run.id, errorCode);
 		this.logger.warn(
 			{
 				durationMs: elapsedMilliseconds(startedAt),
 				errorCode,
-				modelName: this.model.name,
-				reviewRunId,
+				modelName: run.model.apiName,
+				reviewRunId: run.id,
 			},
 			"review_run.failed",
 		);
 	}
 }
-
-type ReviewResult =
-	| { readonly kind: "completed"; readonly findings: readonly ReviewFinding[] }
-	| { readonly kind: "failed"; readonly errorCode: ReviewRunErrorCode };
 
 function isValidFinding(finding: ReviewFinding, chunk: ReviewInput["chunks"][number]): boolean {
 	return (

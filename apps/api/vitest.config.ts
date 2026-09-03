@@ -12,6 +12,9 @@ export default defineConfig({
 			"#features/github": fileURLToPath(
 				new URL("./src/features/github/index.ts", import.meta.url),
 			),
+			"#features/models": fileURLToPath(
+				new URL("./src/features/models/index.ts", import.meta.url),
+			),
 			"#features/repository-policy": fileURLToPath(
 				new URL("./src/features/repository-policy/index.ts", import.meta.url),
 			),

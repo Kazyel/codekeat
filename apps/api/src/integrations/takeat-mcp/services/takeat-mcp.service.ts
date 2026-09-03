@@ -7,6 +7,7 @@ import {
 } from "@google/genai";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import type { Logger } from "pino";
 import {
 	ALLOWED_TAKEAT_MCP_TOOL_NAMES,
 	TAKEAT_MCP_REQUEST_TIMEOUT_MS,
@@ -25,17 +26,64 @@ export class TakeatMcpTool implements CallableTool {
 	constructor(
 		private readonly url: URL,
 		private readonly accessTokenService: TakeatMcpAccessTokenService,
+		private readonly logger: Logger,
 	) {}
 
 	async tool(): Promise<Tool> {
-		return this.withAuthenticationRetry((delegate) => delegate.tool());
+		const startedAt = performance.now();
+		this.logger.info({}, "takeat_mcp.tool_catalog_started");
+
+		try {
+			const tool = await this.withAuthenticationRetry((delegate) => delegate.tool());
+
+			this.logger.info(
+				{
+					durationMs: elapsedMilliseconds(startedAt),
+					toolCount: tool.functionDeclarations?.length ?? 0,
+				},
+				"takeat_mcp.tool_catalog_succeeded",
+			);
+
+			return tool;
+		} catch (error) {
+			this.logger.error(
+				{ durationMs: elapsedMilliseconds(startedAt), err: error },
+				"takeat_mcp.tool_catalog_failed",
+			);
+			throw error;
+		}
 	}
 
 	async callTool(functionCalls: FunctionCall[]): Promise<Part[]> {
+		const toolNames = functionCalls.map((call) => call.name ?? "unknown");
+		const fields = { functionCallCount: functionCalls.length, toolNames };
+
 		if (functionCalls.some((call) => !isAllowedTool(call.name))) {
+			this.logger.warn(fields, "takeat_mcp.tool_call_rejected");
 			throw new TakeatMcpToolCallRejectedError();
 		}
-		return this.withAuthenticationRetry((delegate) => delegate.callTool(functionCalls));
+
+		const startedAt = performance.now();
+		this.logger.info(fields, "takeat_mcp.tool_call_started");
+
+		try {
+			const result = await this.withAuthenticationRetry((delegate) =>
+				delegate.callTool(functionCalls),
+			);
+
+			this.logger.info(
+				{ durationMs: elapsedMilliseconds(startedAt), ...fields },
+				"takeat_mcp.tool_call_succeeded",
+			);
+
+			return result;
+		} catch (error) {
+			this.logger.error(
+				{ durationMs: elapsedMilliseconds(startedAt), err: error, ...fields },
+				"takeat_mcp.tool_call_failed",
+			);
+			throw error;
+		}
 	}
 
 	private async withAuthenticationRetry<T>(
@@ -43,14 +91,16 @@ export class TakeatMcpTool implements CallableTool {
 	): Promise<T> {
 		try {
 			return await operation(await this.getDelegate());
-		} catch {
+		} catch (error) {
+			this.logger.warn({ err: error }, "takeat_mcp.authentication_retry");
 			await this.reset();
 			this.accessTokenService.invalidate();
 		}
 
 		try {
 			return await operation(await this.getDelegate());
-		} catch {
+		} catch (error) {
+			this.logger.error({ err: error }, "takeat_mcp.authentication_retry_failed");
 			await this.reset();
 			this.accessTokenService.invalidate();
 			throw new TakeatMcpUnavailableError();
@@ -72,12 +122,24 @@ export class TakeatMcpTool implements CallableTool {
 			},
 		});
 
+		const startedAt = performance.now();
+		this.logger.info({}, "takeat_mcp.connection_started");
+
 		try {
 			await client.connect(transport);
-		} catch {
+		} catch (error) {
 			await closeClient(client);
+			this.logger.error(
+				{ durationMs: elapsedMilliseconds(startedAt), err: error },
+				"takeat_mcp.connection_failed",
+			);
 			throw new TakeatMcpUnavailableError();
 		}
+
+		this.logger.info(
+			{ durationMs: elapsedMilliseconds(startedAt) },
+			"takeat_mcp.connection_established",
+		);
 
 		this.client = client;
 		this.currentAccessToken = accessToken;
@@ -134,4 +196,8 @@ async function closeClient(client: Client): Promise<void> {
 	} catch {
 		// The failed MCP session is already unusable.
 	}
+}
+
+function elapsedMilliseconds(startedAt: number): number {
+	return Math.round(performance.now() - startedAt);
 }

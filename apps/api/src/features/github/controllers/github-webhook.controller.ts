@@ -19,6 +19,7 @@ import {
 interface PullRequestReviewEvent {
 	readonly delivery: WebhookDelivery;
 	readonly isDraft: boolean;
+	readonly pullRequestState: "open" | "closed";
 	readonly request: RequestReview | null;
 }
 
@@ -96,6 +97,7 @@ async function handlePullRequest(
 				installationId: context.payload.installation?.id ?? null,
 			},
 			isDraft: isDraftPullRequest(context),
+			pullRequestState: context.payload.pull_request.state,
 			request: toRequestReview(context, trigger),
 		},
 		new GitHubRepositoryPolicyService(context),

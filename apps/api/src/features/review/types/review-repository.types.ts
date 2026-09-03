@@ -1,4 +1,6 @@
+import type { ReviewModelConfiguration } from "../../models/index.js";
 import type { PolicySource } from "#features/repository-policy";
+import type { ReviewTokenUsage } from "./review-input.types.js";
 import type {
 	FindingSeverity,
 	ReviewRunIgnoreReason,
@@ -26,6 +28,7 @@ export interface ReviewRunInput {
 	readonly policySource: PolicySource;
 	readonly policyWarningCode: string | null;
 	readonly ignoreReason: ReviewRunIgnoreReason | null;
+	readonly model: ReviewModelConfiguration;
 }
 
 export interface StoredFinding {
@@ -45,11 +48,13 @@ export interface ExistingReviewRun {
 export interface RunnableReviewRun {
 	readonly id: string;
 	readonly githubInstallationId: number;
+	readonly githubInstallationAccountLogin: string;
 	readonly repositoryOwner: string;
 	readonly repositoryName: string;
 	readonly repositoryFullName: string;
 	readonly pullRequestNumber: number;
 	readonly headSha: string;
+	readonly model: ReviewModelConfiguration;
 }
 
 export interface ReviewReportComment {
@@ -81,6 +86,7 @@ export interface ReviewRunSummary {
 	readonly findingCount: number;
 	readonly createdAt: string;
 	readonly completedAt: string | null;
+	readonly usage: ReviewTokenUsage | null;
 	readonly reviewReportStatus: ReviewReportStatus | null;
 	readonly githubCommentUrl: string | null;
 }
@@ -91,4 +97,15 @@ export interface ReviewRunDetail extends ReviewRunSummary {
 	readonly ignoreReason: string | null;
 	readonly errorCode: string | null;
 	readonly findings: readonly StoredFinding[];
+}
+
+export type ReviewUsageGroup = "day" | "week" | "month";
+
+export interface ReviewUsageSummary {
+	readonly period: string;
+	readonly repositoryFullName: string;
+	readonly inputTokens: number;
+	readonly outputTokens: number;
+	readonly cacheTokens: number;
+	readonly costUsdMicros: number;
 }

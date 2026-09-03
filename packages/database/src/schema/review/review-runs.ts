@@ -1,6 +1,7 @@
 import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 import { repositories } from "../github/repositories.js";
+import { models } from "../model/models.js";
 
 export const reviewRuns = sqliteTable(
 	"review_runs",
@@ -22,7 +23,15 @@ export const reviewRuns = sqliteTable(
 		policyWarningCode: text("policy_warning_code"),
 		ignoreReason: text("ignore_reason"),
 		errorCode: text("error_code"),
+		modelId: text("model_id").references(() => models.id),
 		modelName: text("model_name"),
+		modelInputNanoUsdPerToken: integer("model_input_nano_usd_per_token"),
+		modelCachedInputNanoUsdPerToken: integer("model_cached_input_nano_usd_per_token"),
+		modelOutputNanoUsdPerToken: integer("model_output_nano_usd_per_token"),
+		inputTokens: integer("input_tokens"),
+		outputTokens: integer("output_tokens"),
+		cacheTokens: integer("cache_tokens"),
+		costUsdMicros: integer("cost_usd_micros"),
 		createdAt: text("created_at").notNull(),
 		startedAt: text("started_at"),
 		completedAt: text("completed_at"),

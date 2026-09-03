@@ -48,7 +48,6 @@ APP_ID=
 PRIVATE_KEY_PATH=/caminho/absoluto/para/codekeat.private-key.pem
 WEBHOOK_SECRET=
 GOOGLE_API_KEY=
-GEMINI_MODEL=gemini-3.6-flash
 TAKEAT_MCP_URL=https://mcp.takeat.app/mcp
 TAKEAT_MCP_TOKEN_URL=https://mcp.takeat.app/oauth/token
 TAKEAT_MCP_CLIENT_ID=
@@ -61,6 +60,9 @@ INITIAL_ADMIN_PASSWORD=uma-senha-com-pelo-menos-8-caracteres
 
 `PRIVATE_KEY` é uma alternativa a `PRIVATE_KEY_PATH`, mas use apenas uma das duas. O administrador é
 criado na primeira inicialização; alterar essas variáveis depois não redefine a senha existente.
+
+O modelo Gemini e as tarifas são definidos no catálogo global em **Modelos** no dashboard. A migration
+inicial seleciona o Gemini 3.8 Flash; alterações afetam somente novas reviews.
 
 `TAKEAT_MCP_URL` e `TAKEAT_MCP_TOKEN_URL` devem usar HTTPS. A API troca as credenciais permanentes
 por um access token, mantém o token somente em memória e o renova antes do vencimento. Credenciais e

@@ -55,7 +55,7 @@ describe("installation state", () => {
 		allowedAccounts.add("takeat");
 
 		const ignoreReason = preparePullRequestRepository(
-			{ request: PULL_REQUEST, isDraft: false },
+			{ request: PULL_REQUEST, isDraft: false, pullRequestState: "open" },
 			{ accessRepository: database.githubAccessRepository, allowedAccounts },
 		);
 
@@ -64,6 +64,26 @@ describe("installation state", () => {
 			defaultBranch: "main",
 			status: "active",
 		});
+		database.close();
+	});
+
+	it("ignores a closed pull request before activating its repository", () => {
+		const database = createTestDatabase();
+		database.githubAccessRepository.upsertInstallation({
+			githubInstallationId: 1,
+			accountLogin: "takeat",
+			status: "active",
+		});
+		const allowedAccounts = new Set<string>();
+		allowedAccounts.add("takeat");
+
+		const ignoreReason = preparePullRequestRepository(
+			{ request: PULL_REQUEST, isDraft: false, pullRequestState: "closed" },
+			{ accessRepository: database.githubAccessRepository, allowedAccounts },
+		);
+
+		expect(ignoreReason).toBe("closed_pull_request");
+		expect(database.githubAccessRepository.findRepository(2, 1)).toBeNull();
 		database.close();
 	});
 });

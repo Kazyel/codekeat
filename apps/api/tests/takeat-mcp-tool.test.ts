@@ -1,4 +1,5 @@
 import type { CallableTool, FunctionCall, Part, Tool } from "@google/genai";
+import pino from "pino";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -7,6 +8,8 @@ import {
 	TakeatMcpToolCallRejectedError,
 	TakeatMcpUnavailableError,
 } from "#integrations/takeat-mcp";
+
+const LOGGER = pino({ level: "silent" });
 
 const SEARCH_CODE_CALL: FunctionCall = {
 	name: "search_code",
@@ -22,13 +25,21 @@ describe("TakeatMcpAccessTokenService", () => {
 	afterEach(() => {
 		vi.unstubAllGlobals();
 		vi.useRealTimers();
+		vi.restoreAllMocks();
 	});
 
 	it("shares one request and caches the access token", async () => {
+		const logger = pino({ level: "silent" });
+		const info = vi.spyOn(logger, "info");
 		const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(tokenResponse("access-token"));
 		vi.stubGlobal("fetch", fetchMock);
 		const tokenUrl = new URL("https://mcp.takeat.example/oauth/token");
-		const provider = new TakeatMcpAccessTokenService(tokenUrl, "codekeat", "client-secret");
+		const provider = new TakeatMcpAccessTokenService(
+			tokenUrl,
+			"codekeat",
+			"client-secret",
+			logger,
+		);
 
 		const tokens = await Promise.all([provider.getAccessToken(), provider.getAccessToken()]);
 
@@ -48,6 +59,11 @@ describe("TakeatMcpAccessTokenService", () => {
 			}),
 			signal: expect.any(AbortSignal),
 		});
+		expect(info).toHaveBeenCalledWith({}, "takeat_mcp.token_request_started");
+		expect(info).toHaveBeenCalledWith(
+			{ durationMs: expect.any(Number), expiresInSeconds: 3_600 },
+			"takeat_mcp.token_request_succeeded",
+		);
 	});
 
 	it("renews the token before it expires", async () => {
@@ -62,6 +78,7 @@ describe("TakeatMcpAccessTokenService", () => {
 			new URL("https://mcp.takeat.example/oauth/token"),
 			"codekeat",
 			"client-secret",
+			LOGGER,
 		);
 
 		await expect(provider.getAccessToken()).resolves.toBe("first-token");
@@ -73,6 +90,8 @@ describe("TakeatMcpAccessTokenService", () => {
 	});
 
 	it("rejects invalid token responses", async () => {
+		const logger = pino({ level: "silent" });
+		const error = vi.spyOn(logger, "error");
 		const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
 			new Response(JSON.stringify({ access_token: "access-token", expires_in: "3600" }), {
 				status: 200,
@@ -83,9 +102,18 @@ describe("TakeatMcpAccessTokenService", () => {
 			new URL("https://mcp.takeat.example/oauth/token"),
 			"codekeat",
 			"client-secret",
+			logger,
 		);
 
 		await expect(provider.getAccessToken()).rejects.toThrow(TakeatMcpUnavailableError);
+		expect(error).toHaveBeenCalledWith(
+			{
+				durationMs: expect.any(Number),
+				errorCode: "invalid_response",
+				statusCode: 200,
+			},
+			"takeat_mcp.token_request_failed",
+		);
 	});
 });
 

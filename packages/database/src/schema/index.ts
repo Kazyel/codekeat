@@ -3,6 +3,7 @@ export { dashboardUsers } from "./auth/dashboard-users.js";
 export { installations } from "./github/installations.js";
 export { repositories } from "./github/repositories.js";
 export { webhookDeliveries } from "./github/webhook-deliveries.js";
+export { models } from "./model/models.js";
 export { findings } from "./review/findings.js";
 export { reviewReports } from "./review/review-reports.js";
 export { reviewRuns } from "./review/review-runs.js";

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 
+import type { ModelCatalogRepository } from "../../models/index.js";
 import type { ResolvedRepositoryPolicy } from "#features/repository-policy";
 import type { ReviewReportRepository } from "../repositories/review-report.repository.js";
 import type { ReviewRunRepository } from "../repositories/review-run.repository.js";
@@ -12,6 +13,7 @@ import type {
 
 interface RequestReviewDependencies {
 	readonly runRepository: ReviewRunRepository;
+	readonly modelRepository: Pick<ModelCatalogRepository, "findSelectedModel">;
 	readonly reportRepository: ReviewReportRepository;
 	readonly queue: ReviewWorkQueue;
 }
@@ -31,6 +33,10 @@ export async function requestReview(
 		return requestExistingReview(request, policy, existingRun, dependencies);
 	}
 
+	const model = dependencies.modelRepository.findSelectedModel();
+	if (model === null) {
+		throw new Error("No enabled review model is selected.");
+	}
 	const runState = getInitialReviewRunState(policy);
 	const reviewRunId = randomUUID();
 
@@ -45,6 +51,7 @@ export async function requestReview(
 		policySource: policy.source,
 		policyWarningCode: policy.warningCode,
 		ignoreReason: runState.ignoreReason,
+		model,
 	});
 
 	if (creation === "duplicate") {

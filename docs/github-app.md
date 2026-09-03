@@ -29,7 +29,6 @@ DATABASE_PATH=/app/data/codekeat.db
 REVIEW_MODE=advisory
 ALLOWED_GITHUB_ACCOUNTS=takeat,organizacao-parceira,perfil-pessoal
 GOOGLE_API_KEY=
-GEMINI_MODEL=gemini-3.6-flash
 TAKEAT_MCP_URL=https://mcp.takeat.app/mcp
 TAKEAT_MCP_TOKEN_URL=https://mcp.takeat.app/oauth/token
 TAKEAT_MCP_CLIENT_ID=
@@ -45,9 +44,10 @@ INITIAL_ADMIN_PASSWORD=
 Configure `PRIVATE_KEY` com o PEM ou Base64 do PEM, ou `PRIVATE_KEY_PATH` com o caminho para o arquivo
 PEM. Para desenvolvimento local, prefira `PRIVATE_KEY_PATH` e não versione o arquivo.
 
-`GOOGLE_API_KEY`, `GEMINI_MODEL` e as quatro variáveis `TAKEAT_MCP_*` são obrigatórias para a API
-iniciar. O Codekeat usa `client_credentials`, guarda o access token somente em memória e o renova antes
-do vencimento. O Gemini recebe o diff e os metadados dos PRs elegíveis, além dos resultados das
+`GOOGLE_API_KEY` e as quatro variáveis `TAKEAT_MCP_*` são obrigatórias para a API iniciar. O modelo
+Gemini e as tarifas são definidos no catálogo global do dashboard; a migration inicial seleciona o Gemini
+3.8 Flash. O Codekeat usa `client_credentials`, guarda o access token somente em memória e o renova
+antes do vencimento. O Gemini recebe o diff e os metadados dos PRs elegíveis, além dos resultados das
 ferramentas permitidas de código e histórico técnico da Takeat. Credenciais e tokens não chegam ao Gemini.
 
 `DASHBOARD_API_TOKEN` protege a API interna usada pelo painel. Use o mesmo valor em `apps/web/.env`,

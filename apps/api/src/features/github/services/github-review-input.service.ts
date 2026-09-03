@@ -58,6 +58,7 @@ export class GitHubReviewInputService implements ReviewInputSource {
 					body: pullRequest.data.body,
 					chunks: createReviewInputChunks(diffResponse.data),
 					headSha: run.headSha,
+					githubInstallationAccountLogin: run.githubInstallationAccountLogin,
 					pullRequestNumber: run.pullRequestNumber,
 					repositoryFullName: run.repositoryFullName,
 					reviewRunId: run.id,

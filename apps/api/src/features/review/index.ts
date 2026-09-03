@@ -1,4 +1,7 @@
-export { createReviewReadController } from "./controllers/review-read.controller.js";
+export {
+	createReviewReadController,
+	createReviewUsageController,
+} from "./controllers/review-read.controller.js";
 export { ReviewModelResponseError } from "./errors/review-model.error.js";
 export { ReviewQueryRepository } from "./repositories/review-query.repository.js";
 export { ReviewReportRepository } from "./repositories/review-report.repository.js";
@@ -13,6 +16,8 @@ export type {
 	ReviewInputLoadResult,
 	ReviewInputSource,
 	ReviewModel,
+	ReviewModelResult,
+	ReviewTokenUsage,
 } from "./types/review-input.types.js";
 export type { ReviewReportPublisherClient } from "./types/review-publication.types.js";
 export type {
@@ -24,6 +29,8 @@ export type {
 	ReviewRunErrorCode,
 	ReviewRunInput,
 	ReviewRunSummary,
+	ReviewUsageGroup,
+	ReviewUsageSummary,
 	RunnableReviewRun,
 	StoredFinding,
 } from "./types/review-repository.types.js";

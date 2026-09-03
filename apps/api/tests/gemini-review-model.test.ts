@@ -11,6 +11,32 @@ import {
 import { TakeatMcpUnavailableError } from "#integrations/takeat-mcp";
 
 const GENERATE_CONTENT = vi.hoisted(() => vi.fn());
+const MODEL = {
+	id: "01991700-0000-7000-8000-000000000038",
+	apiName: "gemini-3.8-flash",
+	inputNanoUsdPerToken: 750,
+	cachedInputNanoUsdPerToken: 75,
+	outputNanoUsdPerToken: 3_750,
+};
+const RESPONSE = {
+	text: JSON.stringify({ findings: [] }),
+	usageMetadata: {
+		promptTokenCount: 100,
+		cachedContentTokenCount: 40,
+		candidatesTokenCount: 10,
+		thoughtsTokenCount: 4,
+		toolUsePromptTokenCount: 20,
+	},
+};
+const EXPECTED_RESULT = {
+	findings: [],
+	usage: {
+		inputTokens: 120,
+		outputTokens: 14,
+		cacheTokens: 40,
+		costUsdMicros: 115.5,
+	},
+};
 
 vi.mock("@google/genai", () => ({
 	GoogleGenAI: class {
@@ -39,6 +65,7 @@ const INPUT: ReviewInput = {
 	body: null,
 	chunks: [CHUNK],
 	headSha: "head-sha",
+	githubInstallationAccountLogin: "TakeatGD",
 	pullRequestNumber: 42,
 	repositoryFullName: "takeat/example",
 	reviewRunId: "review-run-id",
@@ -51,18 +78,19 @@ describe("GeminiReviewService", () => {
 	});
 
 	it("uses deterministic, evidence-first review instructions", async () => {
-		GENERATE_CONTENT.mockResolvedValueOnce({ text: JSON.stringify({ findings: [] }) });
+		GENERATE_CONTENT.mockResolvedValueOnce(RESPONSE);
 		const model = new GeminiReviewService(
 			"google-api-key",
-			"gemini-model",
 			TAKEAT_MCP_TOOL,
 			pino({ level: "silent" }),
 		);
 
-		await model.review(INPUT, CHUNK);
+		const result = await model.review(MODEL, INPUT, CHUNK);
+		expect(result).toEqual(EXPECTED_RESULT);
 
 		expect(GENERATE_CONTENT).toHaveBeenCalledWith(
 			expect.objectContaining({
+				model: MODEL.apiName,
 				contents: expect.stringMatching(
 					/tente refutá-lo[\s\S]*cenário alcançável[\s\S]*ordem de execução válida/,
 				),
@@ -71,20 +99,37 @@ describe("GeminiReviewService", () => {
 		);
 	});
 
+	it("does not provide the Takeat MCP to reviews from another installation", async () => {
+		GENERATE_CONTENT.mockResolvedValueOnce(RESPONSE);
+		const model = new GeminiReviewService(
+			"google-api-key",
+			TAKEAT_MCP_TOOL,
+			pino({ level: "silent" }),
+		);
+
+		await expect(
+			model.review(MODEL, { ...INPUT, githubInstallationAccountLogin: "Kazyel" }, CHUNK),
+		).resolves.toEqual(EXPECTED_RESULT);
+
+		expect(GENERATE_CONTENT).toHaveBeenCalledWith(
+			expect.objectContaining({
+				config: expect.not.objectContaining({
+					automaticFunctionCalling: expect.anything(),
+					tools: expect.anything(),
+				}),
+			}),
+		);
+	});
+
 	it("retries one MCP failure without tools and logs sanitized context", async () => {
 		GENERATE_CONTENT.mockRejectedValueOnce(
 			new TakeatMcpUnavailableError(),
-		).mockResolvedValueOnce({ text: JSON.stringify({ findings: [] }) });
+		).mockResolvedValueOnce(RESPONSE);
 		const logger = pino({ level: "silent" });
 		const warn = vi.spyOn(logger, "warn");
-		const model = new GeminiReviewService(
-			"google-api-key",
-			"gemini-model",
-			TAKEAT_MCP_TOOL,
-			logger,
-		);
+		const model = new GeminiReviewService("google-api-key", TAKEAT_MCP_TOOL, logger);
 
-		await expect(model.review(INPUT, CHUNK)).resolves.toEqual([]);
+		await expect(model.review(MODEL, INPUT, CHUNK)).resolves.toEqual(EXPECTED_RESULT);
 
 		expect(GENERATE_CONTENT).toHaveBeenCalledTimes(2);
 		expect(GENERATE_CONTENT).toHaveBeenNthCalledWith(
@@ -120,14 +165,9 @@ describe("GeminiReviewService", () => {
 		GENERATE_CONTENT.mockRejectedValueOnce(requestError);
 		const logger = pino({ level: "silent" });
 		const warn = vi.spyOn(logger, "warn");
-		const model = new GeminiReviewService(
-			"google-api-key",
-			"gemini-model",
-			TAKEAT_MCP_TOOL,
-			logger,
-		);
+		const model = new GeminiReviewService("google-api-key", TAKEAT_MCP_TOOL, logger);
 
-		await expect(model.review(INPUT, CHUNK)).rejects.toBe(requestError);
+		await expect(model.review(MODEL, INPUT, CHUNK)).rejects.toBe(requestError);
 		expect(GENERATE_CONTENT).toHaveBeenCalledTimes(1);
 		expect(warn).not.toHaveBeenCalled();
 	});

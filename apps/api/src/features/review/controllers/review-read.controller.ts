@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { z } from "zod";
 import {
 	hasValidBearerToken,
+	HTTP_STATUS_BAD_REQUEST,
 	HTTP_STATUS_NOT_FOUND,
 	HTTP_STATUS_OK,
 	HTTP_STATUS_UNAUTHORIZED,
@@ -12,6 +13,16 @@ import {
 import type { ReviewQueryRepository } from "../repositories/review-query.repository.js";
 
 const REVIEW_RUNS_PATH = "/api/v1/review-runs";
+const REVIEW_USAGE_PATH = "/api/v1/review-usage";
+const REVIEW_USAGE_QUERY_SCHEMA = z
+	.object({
+		groupBy: z.enum(["day", "week", "month"]),
+		repository: z
+			.string()
+			.regex(/^[^/\s]+\/[^/\s]+$/)
+			.optional(),
+	})
+	.strict();
 const REVIEW_RUN_ID_SCHEMA = z.string().uuid();
 
 type HttpHandler = (request: IncomingMessage, response: ServerResponse) => boolean;
@@ -21,6 +32,14 @@ export function createReviewReadController(
 	dashboardApiToken: string,
 ): HttpHandler {
 	return (request, response) => handleRequest(request, response, repository, dashboardApiToken);
+}
+
+export function createReviewUsageController(
+	repository: ReviewQueryRepository,
+	dashboardApiToken: string,
+): HttpHandler {
+	return (request, response) =>
+		handleReviewUsageRequest(request, response, repository, dashboardApiToken);
 }
 
 function handleRequest(
@@ -44,6 +63,46 @@ function handleRequest(
 	}
 
 	return respondToReviewRunRequest(url.pathname, response, repository);
+}
+
+function handleReviewUsageRequest(
+	request: IncomingMessage,
+	response: ServerResponse,
+	repository: ReviewQueryRepository,
+	dashboardApiToken: string,
+): boolean {
+	if (request.method !== "GET") {
+		return false;
+	}
+
+	const url = new URL(request.url ?? "/", "http://localhost");
+	if (url.pathname !== REVIEW_USAGE_PATH) {
+		return false;
+	}
+
+	if (!hasValidBearerToken(request, dashboardApiToken)) {
+		sendJson(response, HTTP_STATUS_UNAUTHORIZED, { error: "unauthorized" });
+		return true;
+	}
+
+	return respondToReviewUsage(url, response, repository);
+}
+
+function respondToReviewUsage(
+	url: URL,
+	response: ServerResponse,
+	repository: ReviewQueryRepository,
+): boolean {
+	const query = REVIEW_USAGE_QUERY_SCHEMA.safeParse(Object.fromEntries(url.searchParams));
+	if (!query.success) {
+		sendJson(response, HTTP_STATUS_BAD_REQUEST, { error: "invalid_query" });
+		return true;
+	}
+
+	sendJson(response, HTTP_STATUS_OK, {
+		usage: repository.listReviewUsage(query.data.groupBy, query.data.repository),
+	});
+	return true;
 }
 
 function respondToReviewRunRequest(

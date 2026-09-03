@@ -1,13 +1,17 @@
 import { findings, reviewRuns } from "@codekeat/database";
 import pino from "pino";
 import { describe, expect, it } from "vitest";
+import type { ReviewModelConfiguration } from "#features/models";
 
 import {
 	type ReviewFinding,
 	type ReviewInput,
 	type ReviewInputSource,
+	type ReviewInputLoadResult,
 	ReviewModelResponseError,
 	type ReviewModel,
+	type ReviewModelResult,
+	type RunnableReviewRun,
 	ReviewRunProcessorService,
 	type ReviewWorkQueue,
 } from "#features/review";
@@ -21,9 +25,10 @@ describe("ReviewRunProcessorService", () => {
 	it("claims a queued run, processes chunks sequentially, and persists findings", async () => {
 		const database = createReviewRun();
 		const model = new RecordedModel([VALID_FINDING, VALID_FINDING]);
+		const inputSource = new ReadyInputSource(TWO_CHUNK_INPUT);
 		const processor = new ReviewRunProcessorService(
 			database.reviewRunRepository,
-			new ReadyInputSource(TWO_CHUNK_INPUT),
+			inputSource,
 			model,
 			new RecordedQueue(),
 			LOGGER,
@@ -32,9 +37,17 @@ describe("ReviewRunProcessorService", () => {
 		await processor.process(REVIEW_RUN_ID);
 
 		expect(model.chunkIndexes).toEqual([1, 2]);
+		expect(inputSource.githubInstallationAccountLogins).toEqual(["takeat"]);
+		expect(model.modelNames).toEqual(["gemini-3.8-flash", "gemini-3.8-flash"]);
 		expect(database.connection.db.select().from(findings).all()).toHaveLength(1);
-		expect(readRun(database).status).toBe("completed");
-		expect(readRun(database).modelName).toBe("test-model");
+		expect(readRun(database)).toMatchObject({
+			status: "completed",
+			modelName: "gemini-3.8-flash",
+			inputTokens: 200,
+			outputTokens: 40,
+			cacheTokens: 20,
+			costUsdMicros: 21,
+		});
 		expect(readRun(database).startedAt).not.toBeNull();
 		expect(readRun(database).completedAt).not.toBeNull();
 		database.close();
@@ -122,9 +135,12 @@ describe("ReviewRunProcessorService", () => {
 });
 
 class ReadyInputSource implements ReviewInputSource {
+	readonly githubInstallationAccountLogins: string[] = [];
+
 	constructor(private readonly input: ReviewInput) {}
 
-	async load() {
+	async load(run: RunnableReviewRun): Promise<ReviewInputLoadResult> {
+		this.githubInstallationAccountLogins.push(run.githubInstallationAccountLogin);
 		return { kind: "ready" as const, input: this.input };
 	}
 }
@@ -136,24 +152,32 @@ class IgnoredInputSource implements ReviewInputSource {
 }
 
 class RecordedModel implements ReviewModel {
-	readonly name = "test-model";
+	readonly modelNames: string[] = [];
 	readonly chunkIndexes: number[] = [];
 
 	constructor(private readonly responses: readonly ReviewFinding[]) {}
 
 	async review(
+		model: ReviewModelConfiguration,
 		_: ReviewInput,
 		chunk: ReviewInput["chunks"][number],
-	): Promise<readonly ReviewFinding[]> {
+	): Promise<ReviewModelResult> {
+		this.modelNames.push(model.apiName);
 		this.chunkIndexes.push(chunk.index);
-		return this.responses;
+		return {
+			findings: this.responses,
+			usage: {
+				inputTokens: 100,
+				outputTokens: 20,
+				cacheTokens: 10,
+				costUsdMicros: 10.25,
+			},
+		};
 	}
 }
 
 class FailingModel implements ReviewModel {
-	readonly name = "test-model";
-
-	async review(): Promise<readonly ReviewFinding[]> {
+	async review(): Promise<never> {
 		throw new ReviewModelResponseError();
 	}
 }
@@ -192,6 +216,7 @@ function createReviewRun() {
 		policySource: "default",
 		policyWarningCode: null,
 		ignoreReason: null,
+		model: database.selectedModel,
 	});
 	return database;
 }
@@ -223,6 +248,7 @@ const ONE_CHUNK_INPUT: ReviewInput = {
 		},
 	],
 	headSha: HEAD_SHA,
+	githubInstallationAccountLogin: "TakeatGD",
 	pullRequestNumber: 30,
 	repositoryFullName: "takeat/codekeat",
 	reviewRunId: REVIEW_RUN_ID,

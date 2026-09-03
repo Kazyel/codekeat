@@ -5,6 +5,7 @@ import { BrandLockup } from "../../../brand-lockup";
 
 import { loadReviewRun } from "../../../lib/api-client";
 import { readSession } from "../../../lib/session";
+import { ReviewUsageDetails } from "../../../review-usage";
 
 interface ReviewDetailPageProperties {
 	readonly params: Promise<{ readonly reviewRunId: string }>;
@@ -52,6 +53,8 @@ export default async function ReviewDetailPage({
 					</div>
 				</div>
 			</header>
+
+			<ReviewUsageDetails completedAt={reviewRun.completedAt} usage={reviewRun.usage} />
 
 			{reviewRun.findings.length === 0 ? (
 				<section className="empty-state">
