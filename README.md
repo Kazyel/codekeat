@@ -176,7 +176,7 @@ pnpm docker:config
 ## Segurança operacional
 
 - Nunca versione `.env`, arquivos PEM ou o SQLite.
-- Não exponha `DASHBOARD_API_TOKEN` como variável `NEXT_PUBLIC_`.
+- Não exponha `DASHBOARD_API_TOKEN` como variável `VITE_`.
 - Use HTTPS para o endpoint público de webhook e para o painel.
 - Faça snapshots e backups periódicos do volume que contém o SQLite.
 - Não execute mais de uma réplica da API enquanto o banco for SQLite.
