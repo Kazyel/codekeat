@@ -23,32 +23,25 @@ RUN pnpm install --frozen-lockfile
 
 FROM dependencies AS builder
 
-ARG NEXT_PUBLIC_APP_NAME=Codekeat
-ARG NEXT_PUBLIC_API_URL=http://localhost:3001
-
-ENV NEXT_PUBLIC_APP_NAME=$NEXT_PUBLIC_APP_NAME
-ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
-
 COPY . .
 
 RUN pnpm turbo run build --filter=@codekeat/web...
+RUN pnpm --filter @codekeat/web deploy --prod /app/deploy
+
 
 FROM node:${NODE_VERSION}-bookworm-slim AS runner
 
 ENV NODE_ENV=production
-ENV HOSTNAME=0.0.0.0
 ENV PORT=3501
+ENV HOST=0.0.0.0
 
 WORKDIR /app
 
-COPY --from=builder --chown=node:node /app/apps/web/.next/standalone ./
-COPY --from=builder --chown=node:node /app/apps/web/.next/server ./apps/web/.next/server
-COPY --from=builder --chown=node:node /app/apps/web/.next/static ./apps/web/.next/static
+COPY --from=builder --chown=node:node /app/deploy ./
+COPY --from=builder --chown=node:node /app/apps/web/dist ./dist
 
 USER node
 
 EXPOSE 3501
 
-WORKDIR /app/apps/web
-
-CMD ["node", "server.js"]
+CMD ["node", "--env-file-if-exists=.env", "node_modules/srvx/bin/srvx.mjs", "--prod", "-s", "../client", "dist/server/server.js"]

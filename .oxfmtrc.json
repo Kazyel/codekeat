@@ -11,5 +11,5 @@
 	"arrowParens": "always",
 	"bracketSameLine": false,
 	"bracketSpacing": true,
-	"ignorePatterns": ["**/drizzle/meta/**", "pnpm-lock.yaml"]
+	"ignorePatterns": ["**/drizzle/meta/**", "apps/web/src/routeTree.gen.ts", "pnpm-lock.yaml"]
 }

@@ -3,7 +3,9 @@ node_modules/
 .pnpm-store/
 
 # Build and tool output
-.next/
+.output/
+.tanstack/
+.superpowers/
 .turbo/
 .cache/
 coverage/

@@ -10,6 +10,19 @@
 	},
 	"overrides": [
 		{
+			"files": ["apps/web/**/*.{ts,tsx}"],
+			"rules": {
+				"nextjs/no-head-element": "off",
+				"nextjs/no-img-element": "off"
+			}
+		},
+		{
+			"files": ["apps/web/src/components/ui/label.tsx"],
+			"rules": {
+				"jsx-a11y/label-has-associated-control": "off"
+			}
+		},
+		{
 			"files": ["apps/api/src/**/*.ts", "packages/database/src/**/*.ts"],
 			"rules": {
 				"complexity": ["error", 5],
