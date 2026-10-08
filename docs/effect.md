@@ -1,0 +1,90 @@
+# Padrões de Effect na API
+
+Effect 4 é o padrão para compor falhas esperadas, recursos, prazos, cache e concorrência na API.
+Os contratos de domínio continuam concretos. Probot, PQueue e o AI SDK recebem `Promise` nos seus
+limites de integração. Programas internos que já usam Effect compõem Effects diretamente.
+
+## Escolha por problema
+
+| Problema                                     | Padrão                                            | Implementação no Codekeat         |
+| -------------------------------------------- | ------------------------------------------------- | --------------------------------- |
+| Etapas dependentes com falhas esperadas      | `Effect.gen`, `Data.TaggedError`, `Effect.result` | `ReviewRunProcessorService`       |
+| Chunks ou lotes que param na primeira falha  | `Effect.forEach` com concorrência explícita       | Geração e julgamento no processor |
+| Acesso exclusivo ao orçamento de evidências  | `Semaphore.withPermit`                            | `ReviewContextTool`               |
+| Token com TTL e consultas concorrentes       | `Cache.makeWith` e invalidação condicional        | `TakeatMcpAccessTokenService`     |
+| Conexão ou requisição que precisa de cleanup | `Effect.acquireUseRelease` e `Effect.ensuring`    | Sessões MCP e requisição OAuth    |
+| Prazo de operação com cancelamento de I/O    | `Effect.timeoutOrElse` e `AbortSignal`            | OAuth, MCP e finalizadores        |
+| Recuperação de uma falha específica          | `Effect.catchTag` ou `Effect.catchIf`             | Renovação de autenticação MCP     |
+| Expiração ou timeout em testes               | `TestClock` e fibers em escopo                    | Testes do cache OAuth             |
+
+Funções puras continuam funções TypeScript. Schemas Zod permanecem a fonte de validação dos contratos
+externos, inclusive para `Output.object` do AI SDK.
+
+## Falhas e composição
+
+Represente falhas esperadas no canal `E` de `Effect<A, E, R>`. Use `Data.TaggedError` quando a falha
+precisa de identificação e campos concretos. Um resultado de negócio, como ignorar um PR desatualizado,
+continua sendo um estado válido do contrato.
+
+Normalize erros externos imediatamente em `Effect.tryPromise`. Preserve somente códigos e campos
+necessários para a decisão. Respostas, credenciais e causas externas completas não entram em logs.
+`Effect.sync` adia operações síncronas até a execução do programa. Defeitos de programação e falhas
+de persistência não devem virar silenciosamente erros do modelo.
+
+Componha programas internos antes de executá-los. Use `runPromise` nos limites que exigem Promise.
+O processor converte o resultado da análise com `Effect.result` antes de persistir a conclusão.
+Uma falha posterior no enfileiramento do relatório não altera uma review que já foi concluída.
+
+O pipeline usa `Effect.forEach` com `concurrency: 1`. Uma falha interrompe os chunks ou lotes seguintes
+e impede a persistência de findings parciais. A deduplicação, as evidências e o arredondamento final
+dos custos continuam sendo decisões do domínio.
+
+Referência: [falhas esperadas e composição](https://effect.website/docs/v4/error-management/expected-errors).
+
+## Recursos, prazos e recuperação
+
+Adquira recursos com `acquireUseRelease` ou com um escopo cujo dono esteja definido. O finalizador
+precisa executar em sucesso, falha e interrupção. Para sessões MCP, o encerramento remoto precede o
+fechamento local. `ensuring` garante o fechamento mesmo quando o encerramento remoto falha.
+
+Um timeout precisa limitar a espera e cancelar o I/O. Mantenha o mesmo `AbortSignal` durante toda
+a requisição, incluindo a leitura do corpo. Finalizadores são protegidos contra interrupção por
+padrão. Operações de cleanup que podem travar usam `Effect.interruptible` com prazo próprio.
+OAuth e cada operação MCP têm prazo de 10 segundos. Encerramento remoto e fechamento local também
+têm prazos individuais de 10 segundos. Uma falha de cleanup é registrada sem substituir o resultado
+original nem provocar renovação de credenciais.
+
+Para retries de falhas transitórias, use `Effect.retry` com uma política `Schedule` limitada e prazo
+total explícito. Defina quais erros permitem repetição e quais operações são seguras para repetir.
+O SDK ou adaptador que já possui uma política de retry permanece seu único dono. A renovação OAuth
+após 401 repete a operação MCP uma vez e invalida somente o token rejeitado.
+
+Referências: [recursos](https://effect.website/docs/v4/resource-management/introduction),
+[retries](https://effect.website/docs/v4/error-management/retrying) e
+[políticas de repetição](https://effect.website/docs/v4/scheduling/cookbook).
+
+## Estado, testes e runtime
+
+Use `Cache` para dados com TTL e lookup compartilhado. Use `Semaphore` para acesso limitado a um
+recurso. O registro de ferramentas possui um permit por tentativa, garantindo execução e contabilização
+sequenciais mesmo quando o AI SDK solicita chamadas concorrentes.
+
+Teste comportamentos de tempo com `TestClock.layer()`. Inicie a operação em uma fiber filha, avance
+o relógio e observe seu resultado. Verifique também o efeito externo esperado, como o sinal abortado
+e a obtenção de outro token após timeout.
+
+`Context.Service` e `Layer` organizam dependências e recursos compartilhados quando um programa
+precisa deles no canal `R`. O bootstrap é o ponto de composição. A injeção atual por construtores
+já fornece as dependências usadas pelo processor e pelos adaptadores.
+
+Uma futura troca de PQueue por `Queue` precisa incluir um worker em escopo, shutdown da aplicação
+e recuperação dos runs em andamento. A fila atual continua serial e sem recuperação após reinício.
+Portas Promise que não recebem `AbortSignal` também não garantem cancelamento do I/O em andamento.
+Logs Pino mantêm códigos, IDs e duração. Spans de tracing precisam de um exporter configurado para
+produzir observabilidade fora do processo.
+
+Referências: [Semaphore](https://effect.website/docs/v4/concurrency/semaphore),
+[TestClock](https://effect.website/docs/v4/testing/testclock),
+[serviços](https://effect.website/docs/v4/requirements-management/services),
+[layers](https://effect.website/docs/v4/requirements-management/layers) e
+[Queue](https://effect.website/docs/v4/concurrency/queue).

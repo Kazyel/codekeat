@@ -126,10 +126,24 @@ para os detalhes operacionais e de permissões.
 
 ## Fluxo de revisão
 
-Eventos elegíveis de PR criam um Review Run. A fila local processa um run de cada vez, obtém o diff como
-GitHub App e envia chunks sequenciais ao Gemini. O modelo pode consultar código e histórico técnico no
-MCP da Takeat antes de produzir Findings. A API persiste os Findings no SQLite e atualiza um único
+Eventos elegíveis de PR criam um Review Run. A fila local processa um run de cada vez e obtém o diff,
+a descrição e o contexto do repositório como GitHub App. Os documentos em `.codekeat/` e os arquivos
+alterados são lidos no SHA do PR, com limites explícitos de tamanho e quantidade.
+
+O Gemini recebe esse contexto com cada chunk. Para instalações da Takeat, o modelo também pode consultar
+código e histórico técnico no MCP. O juiz recebe título, descrição, contexto do repositório e as consultas
+MCP realizadas na geração dos candidatos. A API persiste o resultado do julgamento e atualiza um único
 comentário consultivo no PR. Quando não encontra um problema concreto, o relatório diz isso explicitamente.
+
+A integração usa o [AI SDK da Vercel](https://ai-sdk.dev/docs/introduction) com o provider Google e
+respostas estruturadas por Zod. O Effect gerencia cache, prazos, renovação de credenciais e recursos
+dos adaptadores OAuth e MCP, além das falhas e da execução sequencial no pipeline de revisão.
+Consulte [Padrões de Effect na API](docs/effect.md) para os critérios de uso. Os contratos de revisão
+permanecem independentes dessas bibliotecas.
+
+O diretório `.codekeat/` descreve o projeto, seus domínios e suas integrações. A configuração permanece
+em `.codekeat.yml`, na branch padrão. Consulte [Contexto de revisão](docs/review-context.md) para os
+arquivos reconhecidos, os limites e a interpretação das evidências.
 
 Um PR em draft, uma conta fora da allowlist ou um repositório removido da instalação não é analisado.
 
@@ -185,5 +199,6 @@ pnpm docker:config
 ## Documentação
 
 - [Arquitetura](docs/architecture.md)
+- [Contexto de revisão](docs/review-context.md)
 - [GitHub App](docs/github-app.md)
 - [Mapa e linguagem dos contextos](CONTEXT-MAP.md)

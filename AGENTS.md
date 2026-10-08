@@ -60,6 +60,11 @@ Use pnpm 10 with Node.js 24; never use npm or yarn and never edit `pnpm-lock.yam
 - Prefer existing platform and repository capabilities; justify every new dependency before adding it.
 - Keep PRs focused; split work near 300 changed lines and never mix broad cleanup into a feature.
 
+## Effect
+
+- Use Effect 4 for API workflows with composed failures, resource lifecycles, deadlines, cache, or concurrency.
+- Read [docs/effect.md](docs/effect.md) before changing these flows; compose internal Effects and execute them at integration boundaries.
+
 ## Safety and Verification
 
 - Treat every external payload as untrusted and never expose secrets in code, logs, fixtures, or commits.
