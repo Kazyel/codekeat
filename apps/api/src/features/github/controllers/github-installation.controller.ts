@@ -1,221 +1,71 @@
-import type { Context } from "probot";
+import type { Context, Probot } from "probot";
+import { z } from "zod";
 
-import type { GitHubAccessRepository } from "../repositories/github-access.repository.js";
 import type { WebhookDeliveryRepository } from "../repositories/webhook-delivery.repository.js";
+import type { GitHubInstallationSyncService } from "../services/github-installation-sync.service.js";
 import { processWebhookDelivery } from "../services/webhook-delivery.service.js";
-import type { DeliveryOutcome } from "../types/webhook-delivery.types.js";
-import { isAllowedGithubAccount } from "../utils/github-account.util.js";
 
-type InstallationEventName =
-	| "installation.created"
-	| "installation.suspend"
-	| "installation.unsuspend"
-	| "installation.deleted"
-	| "installation_repositories.added"
-	| "installation_repositories.removed";
+const INSTALLATION_EVENTS = [
+	"installation.created",
+	"installation.suspend",
+	"installation.unsuspend",
+	"installation.deleted",
+	"installation.new_permissions_accepted",
+	"installation_repositories.added",
+	"installation_repositories.removed",
+	"repository.created",
+	"repository.deleted",
+	"repository.renamed",
+	"repository.archived",
+	"repository.unarchived",
+	"repository.edited",
+	"repository.transferred",
+	"repository.privatized",
+	"repository.publicized",
+] as const;
 
-type InstallationContext = Context<InstallationEventName>;
+const EVENT_SCHEMA = z.object({
+	action: z.string().min(1),
+	installation: z.object({ id: z.number().int().positive() }).optional(),
+});
+
+const INACTIVE_INSTALLATION_EVENTS: Readonly<Record<string, "suspended" | "deleted" | undefined>> =
+	{
+		"installation.suspend": "suspended",
+		"installation.deleted": "deleted",
+	};
 
 interface InstallationDependencies {
-	readonly accessRepository: GitHubAccessRepository;
+	readonly installationSync: GitHubInstallationSyncService;
 	readonly deliveryRepository: WebhookDeliveryRepository;
-	readonly allowedAccounts: ReadonlySet<string>;
 }
 
-interface GitHubRepository {
-	readonly id: number;
-	readonly name: string;
-	readonly full_name: string;
-}
-
-export async function handleInstallationCreated(
-	context: Context<"installation.created">,
+export function registerGitHubInstallationHandlers(
+	app: Probot,
 	dependencies: InstallationDependencies,
-): Promise<void> {
-	await processWebhookDelivery(
-		dependencies.deliveryRepository,
-		deliveryFor(context),
-		async () => {
-			const installation = context.payload.installation;
-
-			const accountLogin = allowedAccountLogin(installation.account, dependencies);
-			if (accountLogin === null) {
-				return ignored("github_account_not_allowed");
-			}
-
-			dependencies.accessRepository.upsertInstallation({
-				githubInstallationId: installation.id,
-				accountLogin,
-				status: "active",
-			});
-
-			upsertRepositories(
-				context.payload.repositories ?? [],
-				installation.id,
-				dependencies.accessRepository,
-			);
-			return handled();
-		},
-	);
-}
-
-export async function handleInstallationSuspended(
-	context: Context<"installation.suspend">,
-	dependencies: InstallationDependencies,
-): Promise<void> {
-	await updateInstallationStatus(context, dependencies, "suspended");
-}
-
-export async function handleInstallationUnsuspended(
-	context: Context<"installation.unsuspend">,
-	dependencies: InstallationDependencies,
-): Promise<void> {
-	await processWebhookDelivery(
-		dependencies.deliveryRepository,
-		deliveryFor(context),
-		async () => {
-			const installation = context.payload.installation;
-
-			const accountLogin = allowedAccountLogin(installation.account, dependencies);
-			if (accountLogin === null) {
-				return ignored("github_account_not_allowed");
-			}
-
-			dependencies.accessRepository.upsertInstallation({
-				githubInstallationId: installation.id,
-				accountLogin,
-				status: "active",
-			});
-			return handled();
-		},
-	);
-}
-
-export async function handleInstallationDeleted(
-	context: Context<"installation.deleted">,
-	dependencies: InstallationDependencies,
-): Promise<void> {
-	await updateInstallationStatus(context, dependencies, "deleted");
-}
-
-export async function handleRepositoriesAdded(
-	context: Context<"installation_repositories.added">,
-	dependencies: InstallationDependencies,
-): Promise<void> {
-	await processWebhookDelivery(
-		dependencies.deliveryRepository,
-		deliveryFor(context),
-		async () => {
-			const installation = dependencies.accessRepository.findInstallation(
-				context.payload.installation.id,
-			);
-			if (installation?.status !== "active") {
-				return ignored("installation_not_active");
-			}
-
-			upsertRepositories(
-				context.payload.repositories_added,
-				context.payload.installation.id,
-				dependencies.accessRepository,
-			);
-			return handled();
-		},
-	);
-}
-
-export async function handleRepositoriesRemoved(
-	context: Context<"installation_repositories.removed">,
-	dependencies: InstallationDependencies,
-): Promise<void> {
-	await processWebhookDelivery(
-		dependencies.deliveryRepository,
-		deliveryFor(context),
-		async () => {
-			const installation = dependencies.accessRepository.findInstallation(
-				context.payload.installation.id,
-			);
-			if (installation === null) {
-				return ignored("installation_not_active");
-			}
-
-			for (const repository of context.payload.repositories_removed) {
-				dependencies.accessRepository.setRepositoryStatus(repository.id, "removed");
-			}
-
-			return handled();
-		},
-	);
-}
-
-async function updateInstallationStatus(
-	context: Context<"installation.suspend" | "installation.deleted">,
-	dependencies: InstallationDependencies,
-	status: "suspended" | "deleted",
-): Promise<void> {
-	await processWebhookDelivery(
-		dependencies.deliveryRepository,
-		deliveryFor(context),
-		async () => {
-			dependencies.accessRepository.setInstallationStatus(
-				context.payload.installation.id,
-				status,
-			);
-			return handled();
-		},
-	);
-}
-
-function deliveryFor(context: InstallationContext): {
-	deliveryId: string;
-	eventName: string;
-	installationId: number;
-} {
-	return {
-		deliveryId: context.id,
-		eventName: context.name,
-		installationId: context.payload.installation.id,
-	};
-}
-
-function allowedAccountLogin(
-	account: Context<"installation.created">["payload"]["installation"]["account"],
-	dependencies: InstallationDependencies,
-): string | null {
-	if (account === null || !("login" in account)) {
-		return null;
-	}
-
-	return isAllowedGithubAccount(account.login, dependencies.allowedAccounts)
-		? account.login
-		: null;
-}
-
-function upsertRepositories(
-	githubRepositories: readonly GitHubRepository[],
-	installationId: number,
-	accessRepository: GitHubAccessRepository,
 ): void {
-	for (const repository of githubRepositories) {
-		accessRepository.upsertRepository({
-			githubRepositoryId: repository.id,
-			installationId,
-			ownerLogin: ownerFromFullName(repository.full_name),
-			name: repository.name,
-			defaultBranch: "unknown",
-			status: "active",
-		});
-	}
+	app.on([...INSTALLATION_EVENTS], (context) => handleInstallationEvent(context, dependencies));
 }
 
-function ownerFromFullName(fullName: string): string {
-	const separatorIndex = fullName.indexOf("/");
-	return fullName.slice(0, separatorIndex);
-}
-
-function handled(): DeliveryOutcome {
-	return { kind: "handled" };
-}
-
-function ignored(reasonCode: string): DeliveryOutcome {
-	return { kind: "ignored", reasonCode };
+async function handleInstallationEvent(
+	context: Context<(typeof INSTALLATION_EVENTS)[number]>,
+	dependencies: InstallationDependencies,
+): Promise<void> {
+	const payload = EVENT_SCHEMA.parse(context.payload);
+	const installationId = payload.installation?.id ?? null;
+	const eventName = `${context.name}.${payload.action}`;
+	await processWebhookDelivery(
+		dependencies.deliveryRepository,
+		{ deliveryId: context.id, eventName, installationId },
+		async () => {
+			if (installationId === null)
+				return { kind: "ignored", reasonCode: "installation_missing" };
+			const status = INACTIVE_INSTALLATION_EVENTS[eventName];
+			if (status !== undefined) {
+				dependencies.installationSync.deactivate(installationId, status);
+				return { kind: "handled" };
+			}
+			return dependencies.installationSync.reconcile(installationId);
+		},
+	);
 }

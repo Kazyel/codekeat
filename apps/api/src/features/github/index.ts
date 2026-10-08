@@ -3,6 +3,7 @@ export { createGitHubConnectionReadController } from "./controllers/github-conne
 export { registerGitHubWebhookController } from "./controllers/github-webhook.controller.js";
 export { GitHubAccessRepository } from "./repositories/github-access.repository.js";
 export { WebhookDeliveryRepository } from "./repositories/webhook-delivery.repository.js";
+export { GitHubInstallationSyncService } from "./services/github-installation-sync.service.js";
 export { GitHubRepositoryPolicyService } from "./services/github-repository-policy.service.js";
 export {
 	createReviewInputChunks,

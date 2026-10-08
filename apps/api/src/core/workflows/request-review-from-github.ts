@@ -26,7 +26,7 @@ export interface GitHubReviewEvent {
 export interface GitHubReviewWorkflowDependencies {
 	readonly allowedAccounts: ReadonlySet<string>;
 	readonly deliveryRepository: WebhookDeliveryRepository;
-	readonly policyService: GitHubRepositoryPolicyService;
+	readonly policyService: Pick<GitHubRepositoryPolicyService, "resolve">;
 	readonly accessRepository: GitHubAccessRepository;
 	readonly reportRepository: ReviewReportRepository;
 	readonly modelRepository: ModelCatalogRepository;
@@ -105,27 +105,21 @@ export function preparePullRequestRepository(
 		return "github_account_not_allowed";
 	}
 
-	if (!isActiveInstallation(event.request.installationId, dependencies.accessRepository)) {
-		return "installation_not_active";
-	}
-
-	dependencies.accessRepository.upsertRepository({
-		githubRepositoryId: event.request.repositoryId,
-		installationId: event.request.installationId,
-		ownerLogin: event.request.repositoryOwner,
-		name: event.request.repositoryName,
-		defaultBranch: event.request.repositoryDefaultBranch,
-		status: "active",
-	});
-
-	return null;
+	return getRepositoryAccessIgnoreReason(event.request, dependencies.accessRepository);
 }
 
-function isActiveInstallation(
-	installationId: number,
+function getRepositoryAccessIgnoreReason(
+	request: RequestReview,
 	accessRepository: GitHubAccessRepository,
-): boolean {
-	return accessRepository.findInstallation(installationId)?.status === "active";
+): "installation_not_active" | "repository_not_active" | null {
+	if (accessRepository.findInstallation(request.installationId)?.status !== "active") {
+		return "installation_not_active";
+	}
+	const repository = accessRepository.findRepository(
+		request.repositoryId,
+		request.installationId,
+	);
+	return repository?.status === "active" ? null : "repository_not_active";
 }
 
 function getPolicyWarningCode(result: ReviewRequestResult): string | null {

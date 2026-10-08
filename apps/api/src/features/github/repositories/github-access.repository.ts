@@ -1,5 +1,10 @@
-import { installations, repositories, type DatabaseConnection } from "@codekeat/database";
-import { and, asc, desc, eq } from "drizzle-orm";
+import {
+	installations,
+	repositories,
+	reviewRuns,
+	type DatabaseConnection,
+} from "@codekeat/database";
+import { and, asc, desc, eq, notExists } from "drizzle-orm";
 import { currentTimestamp } from "#shared/database";
 
 import type {
@@ -15,6 +20,39 @@ import type {
 
 export class GitHubAccessRepository {
 	constructor(private readonly connection: DatabaseConnection) {}
+
+	listInstallations(): readonly InstallationInput[] {
+		return this.connection.db
+			.select({
+				githubInstallationId: installations.githubInstallationId,
+				accountLogin: installations.accountLogin,
+				status: installations.status,
+			})
+			.from(installations)
+			.all();
+	}
+
+	reconcileInstallation(
+		installation: InstallationInput,
+		snapshot: readonly Omit<RepositoryInput, "installationId" | "status">[],
+	): void {
+		this.connection.db.transaction((transaction) => {
+			this.upsertInstallation(installation);
+			transaction
+				.update(repositories)
+				.set({ status: "removed", updatedAt: currentTimestamp() })
+				.where(eq(repositories.installationId, installation.githubInstallationId))
+				.run();
+			for (const repository of snapshot) {
+				this.upsertRepository({
+					...repository,
+					installationId: installation.githubInstallationId,
+					status: "active",
+				});
+			}
+			this.deleteRemovedRepositoriesWithoutReviews(installation.githubInstallationId);
+		});
+	}
 
 	listInstallationSummaries(): readonly GitHubInstallationSummary[] {
 		const repositoriesByInstallation = new Map<number, GitHubRepositoryAccessSummary[]>();
@@ -92,11 +130,21 @@ export class GitHubAccessRepository {
 	}
 
 	setInstallationStatus(githubInstallationId: number, status: InstallationStatus): void {
-		this.connection.db
-			.update(installations)
-			.set({ status, updatedAt: currentTimestamp() })
-			.where(eq(installations.githubInstallationId, githubInstallationId))
-			.run();
+		this.connection.db.transaction((transaction) => {
+			transaction
+				.update(installations)
+				.set({ status, updatedAt: currentTimestamp() })
+				.where(eq(installations.githubInstallationId, githubInstallationId))
+				.run();
+			if (status !== "deleted") return;
+
+			transaction
+				.update(repositories)
+				.set({ status: "removed", updatedAt: currentTimestamp() })
+				.where(eq(repositories.installationId, githubInstallationId))
+				.run();
+			this.deleteRemovedRepositoriesWithoutReviews(githubInstallationId);
+		});
 	}
 
 	findInstallation(githubInstallationId: number): StoredInstallation | null {
@@ -149,5 +197,23 @@ export class GitHubAccessRepository {
 			.get();
 
 		return row ?? null;
+	}
+
+	private deleteRemovedRepositoriesWithoutReviews(installationId: number): void {
+		const history = this.connection.db
+			.select({ id: reviewRuns.id })
+			.from(reviewRuns)
+			.where(eq(reviewRuns.githubRepositoryId, repositories.githubRepositoryId));
+
+		this.connection.db
+			.delete(repositories)
+			.where(
+				and(
+					eq(repositories.installationId, installationId),
+					eq(repositories.status, "removed"),
+					notExists(history),
+				),
+			)
+			.run();
 	}
 }
