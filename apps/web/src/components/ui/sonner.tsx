@@ -9,29 +9,33 @@ import {
 	Loader2Icon,
 } from "lucide-react";
 
-const Toaster = ({ ...props }: ToasterProps) => {
+import { buttonVariants } from "@/components/ui/button";
+
+const Toaster = ({ ...props }: ToasterProps): React.JSX.Element => {
 	return (
 		<Sonner
-			theme="dark"
-			className="toaster group"
+			className="app-toaster"
+			closeButton
+			containerAriaLabel="Notificações"
 			icons={{
-				success: <CircleCheckIcon className="size-4" />,
-				info: <InfoIcon className="size-4" />,
-				warning: <TriangleAlertIcon className="size-4" />,
-				error: <OctagonXIcon className="size-4" />,
-				loading: <Loader2Icon className="size-4 animate-spin" />,
+				success: <CircleCheckIcon aria-hidden="true" className="size-5" />,
+				info: <InfoIcon aria-hidden="true" className="size-5" />,
+				warning: <TriangleAlertIcon aria-hidden="true" className="size-5" />,
+				error: <OctagonXIcon aria-hidden="true" className="size-5" />,
+				loading: <Loader2Icon aria-hidden="true" className="size-5 animate-spin" />,
 			}}
-			style={
-				{
-					"--normal-bg": "var(--popover)",
-					"--normal-text": "var(--popover-foreground)",
-					"--normal-border": "var(--border)",
-					"--border-radius": "var(--radius)",
-				} as React.CSSProperties
-			}
 			toastOptions={{
+				unstyled: true,
+				closeButtonAriaLabel: "Fechar notificação",
 				classNames: {
-					toast: "cn-toast",
+					toast: "app-toast",
+					actionButton: buttonVariants({ size: "sm" }),
+					cancelButton: buttonVariants({ variant: "outline", size: "sm" }),
+					closeButton: buttonVariants({
+						variant: "ghost",
+						size: "icon-sm",
+						className: "app-toast-close",
+					}),
 				},
 			}}
 			{...props}
