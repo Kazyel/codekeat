@@ -5,6 +5,7 @@ import type {
 	ReviewFindingEvidence,
 	ReviewFindingJudgeInput,
 	ReviewInputChunk,
+	ReviewInvestigation,
 } from "../types/review-input.types.js";
 import type { ReviewFinding } from "../types/review-run.types.js";
 
@@ -14,6 +15,7 @@ export const MAXIMUM_JUDGE_BATCH_FINDINGS = 50;
 export interface ChunkFindingCandidate {
 	readonly chunk: ReviewInputChunk;
 	readonly finding: ReviewFinding;
+	readonly investigation: ReviewInvestigation;
 }
 
 export interface ReviewFindingJudgeBatch {
@@ -41,7 +43,10 @@ export function createReviewFindingJudgeBatches(
 		if (evidence === null) {
 			return null;
 		}
-		entries.push({ evidence, finding: candidate.finding });
+		entries.push({
+			evidence: { ...evidence, investigation: candidate.investigation },
+			finding: candidate.finding,
+		});
 	}
 	return packCandidateEvidence(entries);
 }
@@ -49,7 +54,7 @@ export function createReviewFindingJudgeBatches(
 export function extractReviewFindingEvidence(
 	chunk: ReviewInputChunk,
 	finding: ReviewFinding,
-): ReviewFindingEvidence | null {
+): Omit<ReviewFindingEvidence, "investigation"> | null {
 	return findReviewFindingEvidence(chunk, finding, parseDiff(chunk.diff));
 }
 
@@ -57,7 +62,7 @@ function findReviewFindingEvidence(
 	chunk: ReviewInputChunk,
 	finding: ReviewFinding,
 	files: readonly File[],
-): ReviewFindingEvidence | null {
+): Omit<ReviewFindingEvidence, "investigation"> | null {
 	for (const [fileIndex, file] of files.entries()) {
 		if (!fileMatchesPath(file, finding.path)) {
 			continue;
@@ -117,11 +122,7 @@ function toJudgeBatch(entries: readonly CandidateEvidence[]): ReviewFindingJudge
 }
 
 function evidenceLength(evidence: readonly ReviewFindingEvidence[]): number {
-	return evidence.reduce(
-		(total, item) =>
-			total + item.diff.length + item.referenceBefore.length + item.referenceAfter.length,
-		0,
-	);
+	return JSON.stringify(evidence).length;
 }
 
 function fileMatchesPath(file: File, path: string): boolean {

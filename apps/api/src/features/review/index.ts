@@ -18,6 +18,8 @@ export type {
 	FindingJudgment,
 	ReviewContextFile,
 	ReviewRepositoryContext,
+	ReviewContextExchange,
+	ReviewInvestigation,
 	ReviewFindingCandidate,
 	ReviewFindingEvidence,
 	ReviewFindingJudge,

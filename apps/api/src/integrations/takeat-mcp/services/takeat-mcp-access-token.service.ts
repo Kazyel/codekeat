@@ -1,3 +1,4 @@
+import { Cache, Effect, Exit } from "effect";
 import type { Logger } from "pino";
 import { z } from "zod";
 
@@ -18,132 +19,151 @@ const ACCESS_TOKEN_RESPONSE_SCHEMA = z.object({
 	expires_in: z.number().int().positive(),
 });
 
+interface CachedAccessToken {
+	readonly value: string;
+	readonly refreshAfterMs: number;
+}
+
+type TokenFailureCode =
+	| "request_failed"
+	| "request_timeout"
+	| "http_error"
+	| "invalid_json"
+	| "invalid_response";
+
 export class TakeatMcpAccessTokenService {
-	private cachedAccessToken: { readonly refreshAt: number; readonly value: string } | null = null;
-	private accessTokenRequest: Promise<string> | null = null;
+	private readonly accessTokens: Cache.Cache<
+		"takeat",
+		CachedAccessToken,
+		TakeatMcpUnavailableError
+	>;
 
 	constructor(
 		private readonly tokenUrl: URL,
 		private readonly clientId: string,
 		private readonly clientSecret: string,
 		private readonly logger: Logger,
-	) {}
-
-	async getAccessToken(): Promise<string> {
-		if (this.cachedAccessToken !== null && Date.now() < this.cachedAccessToken.refreshAt) {
-			return this.cachedAccessToken.value;
-		}
-
-		if (this.accessTokenRequest === null) {
-			this.accessTokenRequest = this.requestAccessToken();
-		}
-
-		try {
-			return await this.accessTokenRequest;
-		} finally {
-			this.accessTokenRequest = null;
-		}
-	}
-
-	invalidate(): void {
-		this.cachedAccessToken = null;
-	}
-
-	private async requestAccessToken(): Promise<string> {
-		const startedAt = performance.now();
-		this.logger.info({}, "takeat_mcp.token_request_started");
-
-		let response: Response;
-
-		try {
-			response = await fetch(this.tokenUrl, {
-				method: "POST",
-				headers: {
-					Accept: "application/json",
-					"Content-Type": "application/json",
+	) {
+		this.accessTokens = Effect.runSync(
+			Cache.makeWith<"takeat", CachedAccessToken, TakeatMcpUnavailableError>(
+				() => this.requestAccessToken(),
+				{
+					capacity: 1,
+					timeToLive: (exit) => (Exit.isSuccess(exit) ? exit.value.refreshAfterMs : 0),
 				},
-				body: JSON.stringify({
-					grant_type: "client_credentials",
-					client_id: this.clientId,
-					client_secret: this.clientSecret,
-				}),
-				signal: AbortSignal.timeout(TAKEAT_MCP_REQUEST_TIMEOUT_MS),
+			),
+		);
+	}
+
+	getAccessToken(): Effect.Effect<string, TakeatMcpUnavailableError> {
+		return Cache.get(this.accessTokens, "takeat").pipe(Effect.map((token) => token.value));
+	}
+
+	invalidate(rejectedToken: string): Effect.Effect<void> {
+		// A delayed rejection must not invalidate credentials another request already renewed.
+		return Cache.invalidateWhen(
+			this.accessTokens,
+			"takeat",
+			(token) => token.value === rejectedToken,
+		).pipe(Effect.asVoid);
+	}
+
+	private requestAccessToken(): Effect.Effect<CachedAccessToken, TakeatMcpUnavailableError> {
+		return Effect.suspend(() => {
+			const startedAt = performance.now();
+			return Effect.acquireUseRelease(
+				Effect.sync(() => new AbortController()),
+				(controller) =>
+					this.loadAccessToken(startedAt, controller.signal).pipe(
+						Effect.timeoutOrElse({
+							duration: TAKEAT_MCP_REQUEST_TIMEOUT_MS,
+							orElse: () =>
+								Effect.fail(
+									this.tokenFailure(startedAt, "request_timeout", undefined),
+								),
+						}),
+					),
+				(controller) => Effect.sync(() => controller.abort()),
+			);
+		});
+	}
+
+	private loadAccessToken(
+		startedAt: number,
+		signal: AbortSignal,
+	): Effect.Effect<CachedAccessToken, TakeatMcpUnavailableError> {
+		return Effect.gen({ self: this }, function* () {
+			this.logger.info({}, "takeat_mcp.token_request_started");
+			const response = yield* this.fetchAccessToken(startedAt, signal);
+			if (!response.ok) {
+				return yield* Effect.fail(
+					this.tokenFailure(startedAt, "http_error", response.status),
+				);
+			}
+
+			const body = yield* Effect.tryPromise({
+				try: () => response.json(),
+				catch: () => this.tokenFailure(startedAt, "invalid_json", response.status),
 			});
-		} catch (error) {
-			this.logger.error(
-				{
-					durationMs: elapsedMilliseconds(startedAt),
-					err: error,
-					errorCode: "request_failed",
-				},
-				"takeat_mcp.token_request_failed",
-			);
-			throw new TakeatMcpUnavailableError();
-		}
-		if (!response.ok) {
-			this.logger.error(
-				{
-					durationMs: elapsedMilliseconds(startedAt),
-					errorCode: "http_error",
-					statusCode: response.status,
-				},
-				"takeat_mcp.token_request_failed",
-			);
-			throw new TakeatMcpUnavailableError();
-		}
+			const result = ACCESS_TOKEN_RESPONSE_SCHEMA.safeParse(body);
+			if (!result.success) {
+				return yield* Effect.fail(
+					this.tokenFailure(startedAt, "invalid_response", response.status),
+				);
+			}
 
-		let body: unknown;
-		try {
-			body = await response.json();
-		} catch (error) {
-			this.logger.error(
+			this.logger.info(
 				{
-					durationMs: elapsedMilliseconds(startedAt),
-					err: error,
-					errorCode: "invalid_json",
-					statusCode: response.status,
+					durationMs: Math.round(performance.now() - startedAt),
+					expiresInSeconds: result.data.expires_in,
 				},
-				"takeat_mcp.token_request_failed",
+				"takeat_mcp.token_request_succeeded",
 			);
-			throw new TakeatMcpUnavailableError();
-		}
+			return {
+				value: result.data.access_token,
+				refreshAfterMs: tokenRefreshDelay(result.data.expires_in),
+			};
+		});
+	}
 
-		const result = ACCESS_TOKEN_RESPONSE_SCHEMA.safeParse(body);
-		if (!result.success) {
-			this.logger.error(
-				{
-					durationMs: elapsedMilliseconds(startedAt),
-					errorCode: "invalid_response",
-					statusCode: response.status,
-				},
-				"takeat_mcp.token_request_failed",
-			);
-			throw new TakeatMcpUnavailableError();
-		}
+	private fetchAccessToken(
+		startedAt: number,
+		signal: AbortSignal,
+	): Effect.Effect<Response, TakeatMcpUnavailableError> {
+		return Effect.tryPromise({
+			try: () =>
+				fetch(this.tokenUrl, {
+					method: "POST",
+					headers: { Accept: "application/json", "Content-Type": "application/json" },
+					body: JSON.stringify({
+						grant_type: "client_credentials",
+						client_id: this.clientId,
+						client_secret: this.clientSecret,
+					}),
+					signal,
+				}),
+			catch: () => this.tokenFailure(startedAt, "request_failed", undefined),
+		});
+	}
 
-		const lifetimeMs = result.data.expires_in * MILLISECONDS_PER_SECOND;
-		const refreshSkewMs = Math.min(
-			MAXIMUM_TOKEN_REFRESH_SKEW_MS,
-			lifetimeMs / TOKEN_REFRESH_LIFETIME_DIVISOR,
+	private tokenFailure(
+		startedAt: number,
+		errorCode: TokenFailureCode,
+		statusCode: number | undefined,
+	): TakeatMcpUnavailableError {
+		this.logger.error(
+			{ durationMs: Math.round(performance.now() - startedAt), errorCode, statusCode },
+			"takeat_mcp.token_request_failed",
 		);
-
-		this.cachedAccessToken = {
-			refreshAt: Date.now() + lifetimeMs - refreshSkewMs,
-			value: result.data.access_token,
-		};
-
-		this.logger.info(
-			{
-				durationMs: elapsedMilliseconds(startedAt),
-				expiresInSeconds: result.data.expires_in,
-			},
-			"takeat_mcp.token_request_succeeded",
-		);
-
-		return result.data.access_token;
+		return new TakeatMcpUnavailableError();
 	}
 }
 
-function elapsedMilliseconds(startedAt: number): number {
-	return Math.round(performance.now() - startedAt);
+function tokenRefreshDelay(expiresInSeconds: number): number {
+	const lifetimeMs = expiresInSeconds * MILLISECONDS_PER_SECOND;
+	const refreshSkewMs = Math.min(
+		MAXIMUM_TOKEN_REFRESH_SKEW_MS,
+		lifetimeMs / TOKEN_REFRESH_LIFETIME_DIVISOR,
+	);
+	return lifetimeMs - refreshSkewMs;
 }
