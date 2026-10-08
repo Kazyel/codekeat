@@ -531,6 +531,13 @@ const DIFF = [
 ].join("\n");
 
 const ONE_CHUNK_INPUT: ReviewInput = {
+	baseSha: "base-sha",
+	repositoryContext: {
+		repositoryFullName: "takeat/codekeat",
+		revision: HEAD_SHA,
+		files: [],
+		omittedFileCount: 0,
+	},
 	body: null,
 	chunks: [
 		{

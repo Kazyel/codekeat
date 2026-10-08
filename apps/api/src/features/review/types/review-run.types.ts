@@ -6,7 +6,14 @@ export type ReviewTrigger = "opened" | "reopened" | "ready_for_review" | "synchr
 
 export type ReviewRunStatus = "queued" | "running" | "completed" | "failed" | "ignored";
 export type FindingSeverity = "critical" | "high" | "medium" | "low";
-export type ReviewRunIgnoreReason = "repository_policy_disabled" | "superseded_head_sha";
+export type ReviewRunIgnoreReason =
+	| "repository_policy_disabled"
+	| "superseded_head_sha"
+	| "superseded_base_sha"
+	| "closed_pull_request"
+	| "draft_pull_request"
+	| "installation_not_active"
+	| "repository_not_active";
 
 export interface ReviewFinding {
 	readonly severity: FindingSeverity;

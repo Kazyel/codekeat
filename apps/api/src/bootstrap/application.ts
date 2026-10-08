@@ -108,7 +108,7 @@ export async function configureApplication(
 		const queue = new ReviewQueueService(reviewTask, publisher, app.log);
 		processor = new ReviewRunProcessorService(
 			reviewRunRepository,
-			new GitHubReviewInputService(app),
+			new GitHubReviewInputService(app, githubAccessRepository),
 			model,
 			model,
 			queue,

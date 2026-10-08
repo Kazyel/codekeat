@@ -1,6 +1,23 @@
 import type { ReviewModelConfiguration } from "../../models/index.js";
 import type { ReviewRunErrorCode, RunnableReviewRun } from "./review-repository.types.js";
-import type { ReviewFinding } from "./review-run.types.js";
+import type { ReviewFinding, ReviewRunIgnoreReason } from "./review-run.types.js";
+
+export type ReviewContextFile =
+	| { readonly kind: "loaded"; readonly path: string; readonly content: string }
+	| { readonly kind: "truncated"; readonly path: string; readonly content: string }
+	| { readonly kind: "missing"; readonly path: string }
+	| {
+			readonly kind: "unavailable";
+			readonly path: string;
+			readonly reason: "request_failed" | "invalid_response" | "head_repository_unavailable";
+	  };
+
+export interface ReviewRepositoryContext {
+	readonly repositoryFullName: string | null;
+	readonly revision: string;
+	readonly files: readonly ReviewContextFile[];
+	readonly omittedFileCount: number;
+}
 
 export interface ReviewInputChunk {
 	readonly changedLines: ReadonlyMap<string, ReadonlySet<number>>;
@@ -12,6 +29,7 @@ export interface ReviewInputChunk {
 }
 
 export interface ReviewInput {
+	readonly baseSha: string;
 	readonly body: string | null;
 	readonly chunks: readonly ReviewInputChunk[];
 	readonly headSha: string;
@@ -19,6 +37,7 @@ export interface ReviewInput {
 	readonly pullRequestNumber: number;
 	readonly repositoryFullName: string;
 	readonly reviewRunId: string;
+	readonly repositoryContext: ReviewRepositoryContext;
 	readonly title: string;
 }
 export interface ReviewTokenUsage {
@@ -79,7 +98,7 @@ export interface ReviewFindingJudge {
 
 export type ReviewInputLoadResult =
 	| { readonly kind: "failed"; readonly errorCode: ReviewRunErrorCode }
-	| { readonly kind: "ignored"; readonly ignoreReason: "superseded_head_sha" }
+	| { readonly kind: "ignored"; readonly ignoreReason: ReviewRunIgnoreReason }
 	| { readonly kind: "ready"; readonly input: ReviewInput };
 
 export interface ReviewInputSource {
