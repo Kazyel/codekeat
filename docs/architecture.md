@@ -67,11 +67,14 @@ continuam em `camelCase`; `const` por si só não transforma uma variável local
 4. A fila local agenda o processamento com concorrência global de um, sem atrasar a resposta HTTP.
 5. O processador reivindica somente runs `queued`, muda-os para `running` e obtém o PR atual como a Installation.
 6. Se o SHA mudou, o run fica `ignored` com `superseded_head_sha`; caso contrário, o diff completo é
-   dividido em Review Chunks de até 100.000 caracteres.
-7. O serviço Gemini recebe os chunks sequencialmente, consulta código e histórico técnico pela integração
-   Takeat MCP filtrada quando necessário e devolve Findings tipados, localizados em linhas adicionadas do chunk.
-8. A API valida, deduplica e persiste todos os Findings e um Review Report pendente com a transição
-   atômica para `completed`.
+   dividido em Review Chunks de até 100.000 caracteres. O serviço GitHub carrega os documentos `.codekeat/`
+   e os arquivos alterados no repositório de origem do head, usando seu SHA exato.
+7. O serviço Gemini recebe título, descrição, SHAs, contexto do repositório e chunks sequenciais.
+   O prompt pede investigação dos fluxos antes de formular Findings. Consultas adicionais pela integração
+   Takeat MCP filtrada são registradas por tentativa de geração, sem estado compartilhado entre reviews.
+8. A API valida e deduplica os candidatos. O juiz recebe as evidências por hunk, o contexto do PR e as
+   consultas MCP associadas, sem executar ferramentas próprias. A API persiste todos os candidatos com
+   seus julgamentos e um Review Report pendente na transição atômica para `completed`.
 9. A fila atualiza um comentário consultivo único do Codekeat no PR; sem Findings, publica a confirmação
    de que não encontrou problemas concretos.
 10. Falhas controladas deixam o run como `failed`, sem persistência parcial de Findings, e falhas de
@@ -90,6 +93,19 @@ Definir um único contrato interno de modelo, `ReviewModel`, com entrada e saíd
 `GeminiReviewService`, em `integrations/gemini`, é a primeira implementação. Um novo modelo entra por
 outra integração, sem alterar o módulo `review` nem os dados persistidos.
 
+O adaptador Gemini usa o AI SDK da Vercel e `@ai-sdk/google`. `Output.object` usa os mesmos schemas
+Zod para orientar e validar findings e julgamentos. O bootstrap configura o provider com `GOOGLE_API_KEY`.
+Os contratos de aplicação continuam assíncronos com `Promise`, sem tipos dos SDKs no domínio.
+
+O Effect é o padrão da API para falhas compostas, recursos, prazos, cache e concorrência.
+O processor usa falhas tipadas e execução sequencial para interromper a análise sem resultados parciais.
+O registro de ferramentas usa `Semaphore` para controlar o orçamento de evidências. Nos adaptadores
+OAuth e MCP, `Cache` controla o TTL e compartilha a obtenção de tokens.
+`acquireUseRelease` fecha as conexões mesmo em falhas parciais, com prazo limitado. Cada operação MCP
+abre uma sessão curta, o que acrescenta handshakes e evita estado de conexão compartilhado entre reviews.
+Uma rejeição de autenticação renova a credencial uma vez. A composição e os critérios de uso estão
+em [Padrões de Effect na API](effect.md).
+
 ### Política por repositório
 
 Cada repositório terá uma `Repository Policy` validada por schema. A fonte inicial será
@@ -100,6 +116,17 @@ Defaults do servidor são a base; a policy só pode sobrescrever opções explic
 Na primeira fatia, o schema aceita somente `version: 1` e `enabled`. Arquivo ausente usa o default;
 arquivo inválido também usa o default, mas registra o aviso `invalid_repository_policy` no Review Run.
 
+### Conhecimento do repositório
+
+O diretório `.codekeat/` fornece conhecimento sobre o projeto e permanece separado da Repository Policy.
+O carregamento inicial prioriza `README.md`, `domain.md` e `integrations.md`, seguido dos arquivos com
+linhas adicionadas no diff. Todos são consultados no SHA e no repositório de origem do head, inclusive
+quando o PR vem de um fork. O carregamento não troca uma revisão ausente pela branch padrão.
+
+Ausência, indisponibilidade e truncamento são estados explícitos do contexto. O contexto acompanha tanto
+a geração quanto o juiz. Documentos adicionais podem ser referenciados pelo README e consultados pelo
+MCP conforme a mudança. Os limites e as regras de proveniência estão em [Contexto de revisão](review-context.md).
+
 ## Estado persistido mínimo
 
 SQLite guarda somente o estado pertencente ao Codekeat: instalação, repositório conectado, Review Run,
@@ -108,7 +135,7 @@ pull requests, commits e usuários.
 
 Um Review Run registra o repositório, número do PR, SHA analisado, status, timestamps, modelo, policy
 aplicada e erro estruturado quando houver falha. Finding registra a severidade, caminho, linha adicionada,
-título e justificativa; diffs, prompts e respostas brutas não são persistidos. Review Report mantém o
+título e justificativa; diffs, prompts, documentos de contexto e consultas MCP não são persistidos. Review Report mantém o
 comentário consultivo mais recente de cada PR.
 
 Um Webhook Delivery registra cada evento recebido e impede que a mesma entrega seja processada duas
