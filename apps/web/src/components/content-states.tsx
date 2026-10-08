@@ -1,14 +1,25 @@
-import { AlertCircle, Inbox, RotateCcw } from "lucide-react";
+import { AlertCircle, RotateCcw } from "lucide-react";
 
+import { EmptyIllustration } from "@/components/empty-illustration";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 
 export function PanelSkeleton({ rows = 3 }: { readonly rows?: number }) {
 	return (
-		<output aria-label="Carregando conteúdo" className="surface-panel block space-y-4 p-5">
-			<Skeleton className="h-4 w-32" />
+		<output
+			aria-label="Carregando conteúdo"
+			className="surface-panel loading-panel block space-y-4 p-5"
+		>
+			<div className="loading-caption h-4">Carregando conteúdo…</div>
 			{Array.from({ length: rows }, (_, index) => (
-				<Skeleton className="h-12 w-full" key={index} />
+				<div aria-hidden="true" className="flex h-12 items-center gap-3" key={index}>
+					<Skeleton className="loading-accent size-9 shrink-0" />
+					<div className="min-w-0 flex-1 space-y-2">
+						<Skeleton className="h-3 w-2/3" />
+						<Skeleton className="h-2 w-1/3" />
+					</div>
+					<Skeleton className="h-5 w-14" />
+				</div>
 			))}
 		</output>
 	);
@@ -23,9 +34,7 @@ interface EmptyStateProps {
 export function EmptyState({ title, description, action }: EmptyStateProps) {
 	return (
 		<div className="empty-state">
-			<span className="empty-orb">
-				<Inbox aria-hidden="true" />
-			</span>
+			<EmptyIllustration />
 			<h2>{title}</h2>
 			<p>{description}</p>
 			{action}
