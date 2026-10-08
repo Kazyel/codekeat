@@ -5,14 +5,14 @@
 Crie a App como pública, com a opção **Any account**, sem publicá-la no Marketplace. A allowlist do
 servidor controla quais organizações e perfis pessoais recebem processamento.
 
-| Configuração            | Valor                                                  |
-| ----------------------- | ------------------------------------------------------ |
-| Webhook URL             | `https://<dominio>/api/github/webhooks`                |
-| Webhook secret          | O mesmo valor de `WEBHOOK_SECRET`                      |
-| Conteúdo de repositório | Read-only                                              |
-| Pull requests           | Read-only                                              |
-| Issues                  | Read and write                                         |
-| Eventos                 | Pull request, Installation e Installation repositories |
+| Configuração            | Valor                                                              |
+| ----------------------- | ------------------------------------------------------------------ |
+| Webhook URL             | `https://<dominio>/api/github/webhooks`                            |
+| Webhook secret          | O mesmo valor de `WEBHOOK_SECRET`                                  |
+| Conteúdo de repositório | Read-only                                                          |
+| Pull requests           | Read-only                                                          |
+| Issues                  | Read and write                                                     |
+| Eventos                 | Pull request, Installation, Installation repositories e Repository |
 
 O GitHub expõe comentários gerais de PR pela API de Issues. Por isso, `Issues: Read and write` permite
 criar e atualizar o comentário consultivo, enquanto `Pull requests: Read-only` basta para ler o PR e o
@@ -70,16 +70,42 @@ As sessões expiram após oito horas, ficam em cookie `httpOnly` e podem ser rev
 
 ## Eventos tratados
 
-| Evento                                                                  | Efeito                                               |
-| ----------------------------------------------------------------------- | ---------------------------------------------------- |
-| `installation.created`                                                  | Registra a Installation e os repositórios concedidos |
-| `installation.suspend` / `installation.deleted`                         | Impede novos Reviews para a Installation             |
-| `installation.unsuspend`                                                | Reativa a Installation permitida                     |
-| `installation_repositories.added` / `removed`                           | Atualiza o Repository Access                         |
-| `pull_request.opened` / `reopened` / `ready_for_review` / `synchronize` | Cria um Review Run para PR não-draft elegível        |
+| Evento                                                                                                                            | Efeito                                                                         |
+| --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `installation.created` / `unsuspend` / `new_permissions_accepted`                                                                 | Reconcilia a Installation permitida e seu inventário completo                  |
+| `installation.suspend` / `installation.deleted`                                                                                   | Impede novos Reviews e invalida sincronizações em andamento                    |
+| `installation_repositories.added` / `removed`                                                                                     | Reconcilia o inventário completo de Repository Access                          |
+| `repository.created` / `deleted` / `renamed` / `archived` / `unarchived` / `edited` / `transferred` / `privatized` / `publicized` | Reconcilia acesso e metadados da Installation permitida                        |
+| `pull_request.opened` / `reopened` / `ready_for_review` / `synchronize`                                                           | Cria um Review Run para PR não-draft elegível, com acesso já conhecido e ativo |
 
-Um evento elegível de PR também sincroniza o Repository Access pelo payload assinado quando o evento
-`installation_repositories.added` não chega à API.
+## Inventário e recuperação
+
+O catálogo de repositórios vem exclusivamente de `GET /installation/repositories`, autenticado com
+token da própria Installation. Os modos **All repositories** e **Only select repositories** usam o mesmo
+fluxo paginado; a seleção é aplicada pelo GitHub, sem consultar a organização nem inferir acesso pelo
+payload de um PR. O evento `repository.created` também atualiza instalações em modo **All repositories**.
+
+Cada sincronização consulta a Installation pela API da App e valida as respostas com Zod. Somente
+depois de todas as páginas serem recebidas e validadas, uma transação SQLite atualiza a Installation,
+o owner, o nome e a branch padrão reais dos repositórios. Repositórios sem acesso e sem Review Runs
+são excluídos somente naquela Installation. Os que possuem histórico permanecem como `removed`,
+sem acesso ativo, preservando seus Reviews. A exclusão da Installation aplica a mesma regra;
+suspensão temporária preserva o inventário. Uma nova concessão cadastra ou reativa o repositório.
+Falha, duplicação ou inconsistência entre páginas não grava um catálogo parcial nem reativa uma
+Installation suspensa.
+Arquivar um repositório dispara a consulta, mas não equivale a revogar seu acesso pela App.
+
+Na inicialização, a API descobre instalações pela API autenticada da App (`GET /app/installations`),
+respeita `ALLOWED_GITHUB_ACCOUNTS` e reconcilia também instalações já persistidas. Isso recupera eventos
+perdidos enquanto a API estava offline, inclusive revogações confirmadas por `404`/`410` na consulta da
+Installation. Falhas são registradas explicitamente; a última informação local é preservada e uma
+Installation com falha não impede a sincronização das outras nem, por si só, derruba a inicialização.
+
+Sincronizações são serializadas por Installation em memória, com invalidação de snapshots antigos
+quando chega outro evento ou uma suspensão/exclusão. Isso depende da restrição de **uma réplica da API**.
+Não há fila externa, replay durável ou varredura periódica: após falha, a recuperação depende de nova
+entrega do webhook, outro evento pertinente ou reinicialização. Um PR desconhecido/removido falha
+fechado e nunca concede ou restaura Repository Access pelo payload assinado.
 
 O endpoint é fornecido pelo Probot, que verifica a assinatura do GitHub com `WEBHOOK_SECRET`. O
 Codekeat não executa código do pull request, lê `.codekeat.yml` exclusivamente da branch padrão e trata
