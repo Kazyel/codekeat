@@ -48,7 +48,7 @@ function DialogContent({
 			<DialogPrimitive.Popup
 				data-slot="dialog-content"
 				className={cn(
-					"fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-5 rounded-2xl border-2 border-foreground bg-popover p-6 text-sm/relaxed text-popover-foreground shadow-[9px_9px_0_var(--hard-shadow)] duration-100 outline-none sm:max-w-md data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
+					"control-surface fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-5 rounded-2xl border-2 bg-popover p-6 text-sm/relaxed text-popover-foreground shadow-[9px_9px_0_var(--control-edge)] duration-100 outline-none sm:max-w-md data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
 					className,
 				)}
 				{...props}
@@ -78,7 +78,7 @@ function DialogHeader({ className, ...props }: React.ComponentProps<"div">) {
 	return (
 		<div
 			data-slot="dialog-header"
-			className={cn("flex flex-col gap-1 text-left", className)}
+			className={cn("flex flex-col gap-2 text-left", className)}
 			{...props}
 		/>
 	);
@@ -112,7 +112,10 @@ function DialogTitle({ className, ...props }: DialogPrimitive.Title.Props) {
 	return (
 		<DialogPrimitive.Title
 			data-slot="dialog-title"
-			className={cn("font-heading text-xl font-semibold tracking-[-0.035em]", className)}
+			className={cn(
+				"font-display text-2xl font-semibold leading-tight tracking-[-0.01em]",
+				className,
+			)}
 			{...props}
 		/>
 	);
@@ -123,7 +126,7 @@ function DialogDescription({ className, ...props }: DialogPrimitive.Description.
 		<DialogPrimitive.Description
 			data-slot="dialog-description"
 			className={cn(
-				"text-sm/relaxed font-medium text-muted-foreground *:[a]:underline *:[a]:underline-offset-3 *:[a]:hover:text-foreground",
+				"text-sm font-normal leading-6 text-muted-foreground *:[a]:underline *:[a]:underline-offset-4 [&_a:hover]:text-foreground",
 				className,
 			)}
 			{...props}

@@ -1,0 +1,84 @@
+@layer components {
+	.loading-skeleton {
+		position: relative;
+		overflow: hidden;
+		isolation: isolate;
+		background-color: color-mix(in srgb, var(--muted) 88%, var(--accent) 12%);
+	}
+
+	.loading-skeleton::after {
+		position: absolute;
+		inset: 0;
+		content: "";
+		pointer-events: none;
+		background: linear-gradient(
+			105deg,
+			transparent 20%,
+			color-mix(in srgb, var(--card) 60%, transparent) 50%,
+			transparent 80%
+		);
+		transform: translateX(-100%);
+		animation: loading-shimmer 1.8s ease-in-out infinite;
+	}
+
+	.loading-accent {
+		background-color: color-mix(in srgb, var(--accent) 26%, var(--muted));
+	}
+
+	.loading-panel::before {
+		position: absolute;
+		top: 0;
+		left: 1.25rem;
+		width: 2rem;
+		height: 3px;
+		content: "";
+		background: var(--accent);
+	}
+
+	.loading-caption {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		color: var(--muted-foreground);
+		font-size: var(--text-xs);
+		line-height: 1rem;
+		font-weight: 500;
+	}
+
+	.loading-caption::before {
+		width: 0.375rem;
+		height: 0.375rem;
+		flex: none;
+		content: "";
+		background: var(--accent);
+		box-shadow: 2px 2px 0 var(--primary);
+	}
+
+	.loading-chart {
+		display: grid;
+		place-items: center;
+		border-left: 1px solid var(--border);
+		border-bottom: 1px solid var(--border);
+		background: repeating-linear-gradient(
+			to top,
+			transparent 0,
+			transparent calc(25% - 1px),
+			var(--chart-grid) calc(25% - 1px),
+			var(--chart-grid) 25%
+		);
+	}
+}
+
+@keyframes loading-shimmer {
+	to {
+		transform: translateX(100%);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.loading-skeleton::after {
+		animation: none;
+		transform: none;
+		background: none;
+	}
+}
