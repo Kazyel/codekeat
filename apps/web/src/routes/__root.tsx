@@ -8,6 +8,7 @@ import {
 	Link,
 	Outlet,
 	Scripts,
+	useRouterState,
 } from "@tanstack/react-router";
 
 import { Button } from "@/components/ui/button";
@@ -63,8 +64,10 @@ export const Route = createRootRouteWithContext<RouterContext>()({
 	shellComponent: RootDocument,
 });
 
-function ThemeDithering() {
+function ThemeDithering(): React.JSX.Element {
+	const isLogin = useRouterState({ select: (state) => state.location.pathname === "/login" });
 	const [isDark, setIsDark] = useState(false);
+	const [speed, setSpeed] = useState<number>(0);
 
 	useEffect(() => {
 		const root = document.documentElement;
@@ -77,17 +80,29 @@ function ThemeDithering() {
 		return () => observer.disconnect();
 	}, []);
 
+	useEffect(() => {
+		const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+		const syncSpeed = (): void => setSpeed(reducedMotion.matches ? 0 : 0.12);
+
+		syncSpeed();
+		reducedMotion.addEventListener("change", syncSpeed);
+
+		return () => reducedMotion.removeEventListener("change", syncSpeed);
+	}, []);
+
 	return (
 		<Dithering
 			aria-hidden="true"
-			className="app-dither"
-			colorBack={isDark ? "#070707" : "#f2f2ef"}
-			colorFront={isDark ? "#fc6701" : "#171719"}
+			className={isLogin ? "app-dither app-dither-login" : "app-dither"}
+			colorBack={isDark || isLogin ? "#070707" : "#f2f2ef"}
+			colorFront={isDark || isLogin ? "#fc6701" : "#171719"}
+			frame={8_000}
 			maxPixelCount={1_500_000}
-			scale={0.75}
-			shape="swirl"
+			rotation={25}
+			scale={0.8}
+			shape="warp"
 			size={2}
-			speed={0}
+			speed={speed}
 			type="8x8"
 		/>
 	);
@@ -100,7 +115,7 @@ function RootComponent() {
 			<div className="relative min-h-svh">
 				<Outlet />
 			</div>
-			<Toaster position="bottom-right" richColors />
+			<Toaster position="bottom-right" />
 		</TooltipProvider>
 	);
 }
@@ -125,10 +140,10 @@ function NotFound() {
 		<main className="grid min-h-svh place-items-center px-6 text-center">
 			<div>
 				<p className="eyebrow">Erro 404</p>
-				<h1 className="mt-2 text-4xl font-semibold tracking-[-0.04em]">
+				<h1 className="mt-3 font-display text-4xl font-semibold leading-tight tracking-[-0.02em]">
 					Página não encontrada
 				</h1>
-				<p className="mt-3 text-sm text-muted-foreground">
+				<p className="mt-4 text-base text-muted-foreground">
 					O endereço não pertence ao dashboard.
 				</p>
 				<Button className="mt-6" render={<Link to="/" />}>

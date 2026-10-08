@@ -1,21 +1,16 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { Link, useRouter } from "@tanstack/react-router";
-import {
-	BarChart3,
-	BrainCircuit,
-	ChevronDown,
-	GitBranch,
-	GitPullRequestArrow,
-	LayoutDashboard,
-	LogOut,
-	Menu,
-	PanelLeftClose,
-	PanelLeftOpen,
-	SunMoon,
-} from "lucide-react";
+import { ChevronDown, LogOut, Menu, PanelLeftClose, PanelLeftOpen, SunMoon } from "lucide-react";
 import { useState } from "react";
 
 import { BrandMark } from "@/components/brand-mark";
+import {
+	AnalyticsIcon,
+	ConnectionsIcon,
+	ModelsIcon,
+	OverviewIcon,
+	ReviewIcon,
+} from "@/components/product-icons";
 import { Button } from "@/components/ui/button";
 import {
 	DropdownMenu,
@@ -23,19 +18,25 @@ import {
 	DropdownMenuItem,
 	DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Separator } from "@/components/ui/separator";
-import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
+import {
+	Sheet,
+	SheetContent,
+	SheetDescription,
+	SheetHeader,
+	SheetTitle,
+	SheetTrigger,
+} from "@/components/ui/sheet";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { logoutFn } from "@/features/auth/auth.functions";
 import type { DashboardUser } from "@/lib/api-contracts";
 import { cn } from "@/lib/utils";
 
 const navigation = [
-	{ to: "/", label: "Visão geral", icon: LayoutDashboard },
-	{ to: "/reviews", label: "Reviews", icon: GitPullRequestArrow },
-	{ to: "/analytics", label: "Analytics", icon: BarChart3 },
-	{ to: "/connections", label: "Conexões", icon: GitBranch },
-	{ to: "/models", label: "Modelos", icon: BrainCircuit },
+	{ to: "/", label: "Visão geral", icon: OverviewIcon },
+	{ to: "/reviews", label: "Reviews", icon: ReviewIcon },
+	{ to: "/analytics", label: "Analytics", icon: AnalyticsIcon },
+	{ to: "/connections", label: "Conexões", icon: ConnectionsIcon },
+	{ to: "/models", label: "Modelos", icon: ModelsIcon },
 ] as const;
 
 export function DashboardShell({
@@ -55,31 +56,34 @@ export function DashboardShell({
 			>
 				Pular para o conteúdo
 			</a>
-			<aside className="app-sidebar">
+			<aside className="app-sidebar" id="dashboard-sidebar">
 				<div
 					className={cn(
-						"mb-8 flex h-12 items-center justify-between",
+						"mb-8 flex h-12 shrink-0 items-center justify-between",
 						collapsed && "justify-center",
 					)}
 				>
 					{collapsed ? null : <Brand />}
 					<Button
 						aria-label={collapsed ? "Expandir sidebar" : "Recolher sidebar"}
-						aria-pressed={collapsed}
-						className="sidebar-toggle border-[#171719] bg-white text-[#171719] shadow-[2px_2px_0_#fc6701]"
+						aria-expanded={!collapsed}
+						aria-controls="dashboard-sidebar"
+						className="sidebar-toggle"
 						onClick={() => setCollapsed((current) => !current)}
-						size="icon-sm"
-						variant="outline"
+						size="icon"
+						variant="ghost"
 					>
 						{collapsed ? (
-							<PanelLeftOpen aria-hidden="true" />
+							<PanelLeftOpen aria-hidden="true" className="size-5" />
 						) : (
-							<PanelLeftClose aria-hidden="true" />
+							<PanelLeftClose aria-hidden="true" className="size-5" />
 						)}
 					</Button>
 				</div>
-				<Navigation collapsed={collapsed} inverted />
-				<div className="mt-auto">
+				<div className="sidebar-navigation min-h-0 flex-1 overflow-y-auto p-1 -m-1">
+					<Navigation collapsed={collapsed} inverted />
+				</div>
+				<div className="shrink-0 pt-6">
 					<UserMenu compact={collapsed} user={user} />
 				</div>
 			</aside>
@@ -109,26 +113,27 @@ function Navigation({
 	readonly inverted?: boolean;
 }) {
 	return (
-		<nav aria-label="Principal" className="space-y-1">
+		<nav aria-label="Principal" className={inverted ? "space-y-1" : "space-y-2"}>
 			{navigation.map(({ to, label, icon: Icon }) => {
 				const link = (
 					<Link
 						activeProps={{
-							className: "border-primary bg-primary text-white",
+							className:
+								"border-primary bg-primary text-white [--icon-fill-opacity:0.4]",
 						}}
 						aria-label={collapsed ? label : undefined}
 						className={cn(
-							"flex h-10 items-center gap-3 overflow-hidden rounded-lg border-2 border-transparent px-3 text-sm transition-colors duration-150 hover:border-white/20 hover:bg-white/10",
+							"product-nav-link control-motion flex items-center gap-3 overflow-hidden rounded-lg px-3 text-sm font-medium",
 							collapsed && "justify-center px-0",
 							inverted
-								? "text-[#a8a8aa] hover:text-white"
-								: "text-muted-foreground hover:border-foreground/30 hover:text-foreground",
+								? "h-11 border-2 border-transparent text-muted-foreground"
+								: "h-12 font-semibold text-foreground",
 						)}
 						key={to}
 						onClick={onNavigate}
 						to={to}
 					>
-						<Icon aria-hidden="true" className="size-4 shrink-0" />
+						<Icon className="size-5 shrink-0" />
 						<span className={cn("shrink-0", collapsed && "sr-only")}>{label}</span>
 					</Link>
 				);
@@ -163,13 +168,17 @@ function MobileHeader({ user }: { readonly user: DashboardUser }) {
 						<Menu aria-hidden="true" />
 					</SheetTrigger>
 					<SheetContent
-						className="w-72 border-l-2! border-foreground bg-sidebar p-5 text-sidebar-foreground [&_[data-slot=sheet-close]]:text-white"
+						className="w-[calc(100%-3rem)] rounded-l-2xl shadow-[-4px_4px_0_var(--control-edge)] sm:w-full"
 						side="right"
 					>
-						<SheetTitle className="mb-7 flex items-center gap-3 text-white">
-							<BrandMark /> Codekeat
-						</SheetTitle>
-						<Navigation inverted onNavigate={() => setOpen(false)} />
+						<SheetHeader>
+							<BrandMark className="mb-2 size-12" />
+							<SheetTitle>Codekeat</SheetTitle>
+							<SheetDescription>Navegação do workspace</SheetDescription>
+						</SheetHeader>
+						<div className="sheet-body">
+							<Navigation onNavigate={() => setOpen(false)} />
+						</div>
 					</SheetContent>
 				</Sheet>
 			</div>
@@ -208,9 +217,12 @@ function UserMenu({
 			<DropdownMenuTrigger
 				render={
 					<Button
+						aria-label={compact ? `Menu de ${label}` : undefined}
 						className={cn(
-							"profile-trigger h-auto w-full justify-between py-2 pr-2 pl-0 text-white",
-							compact && "size-9 p-0",
+							"profile-trigger text-sidebar-foreground",
+							compact
+								? "size-11 justify-center p-0"
+								: "h-auto w-full justify-between p-3",
 						)}
 						variant="ghost"
 					/>
@@ -219,8 +231,8 @@ function UserMenu({
 				<span className="flex min-w-0 items-center gap-3">
 					<span
 						className={cn(
-							"grid shrink-0 place-items-center rounded-full border-2 border-[#171719] bg-[#f7f5f1] text-sm font-bold uppercase text-[#171719] shadow-[3px_3px_0_#fc6701]",
-							compact ? "size-9" : "size-10",
+							"grid shrink-0 place-items-center rounded-full border-2 border-[var(--accent)] bg-[#f7f5f1] text-sm font-bold uppercase text-[#171719] shadow-[3px_3px_0_var(--accent)]",
+							compact ? "size-8" : "size-10",
 						)}
 					>
 						{label.charAt(0)}
@@ -228,34 +240,32 @@ function UserMenu({
 					{compact ? null : (
 						<span className="min-w-0 text-left">
 							<span className="block truncate text-sm font-semibold">{label}</span>
-							<span className="block text-xs font-medium capitalize text-[#b9b9bb]">
+							<span className="block text-xs font-medium capitalize text-muted-foreground">
 								{user.role}
 							</span>
 						</span>
 					)}
 				</span>
 				{compact ? null : (
-					<ChevronDown aria-hidden="true" className="size-3.5 text-[#a8a8aa]" />
+					<ChevronDown aria-hidden="true" className="size-3.5 text-muted-foreground" />
 				)}
 			</DropdownMenuTrigger>
-			<DropdownMenuContent align="end" className="w-60">
+			<DropdownMenuContent
+				align={compact ? "end" : "start"}
+				className="w-60"
+				side={compact ? "bottom" : "top"}
+				sideOffset={12}
+			>
 				<div className="px-2 py-1.5">
 					<p className="truncate text-sm font-semibold">{user.email}</p>
 					<p className="text-xs font-medium capitalize text-muted-foreground">
 						{user.role}
 					</p>
 				</div>
-				<Separator className="my-1" />
-				<DropdownMenuItem
-					className="dark:focus:border-white/70 dark:focus:bg-accent/20 dark:focus:text-white dark:focus:shadow-[3px_3px_0_#fc6701] dark:focus:[&_svg]:text-accent! dark:focus:[&_svg_*]:text-accent!"
-					onClick={toggleTheme}
-				>
+				<DropdownMenuItem onClick={toggleTheme}>
 					<SunMoon aria-hidden="true" /> Alternar tema
 				</DropdownMenuItem>
-				<DropdownMenuItem
-					className="dark:focus:border-white/70 dark:focus:bg-accent/20 dark:focus:text-white dark:focus:shadow-[3px_3px_0_#fc6701] dark:focus:[&_svg]:text-accent! dark:focus:[&_svg_*]:text-accent!"
-					onClick={handleLogout}
-				>
+				<DropdownMenuItem onClick={handleLogout}>
 					<LogOut aria-hidden="true" /> Sair
 				</DropdownMenuItem>
 			</DropdownMenuContent>
