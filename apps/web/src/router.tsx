@@ -17,6 +17,8 @@ export function getRouter() {
 		scrollRestoration: true,
 		defaultPreload: "intent",
 		defaultPendingComponent: RoutePending,
+		defaultPendingMs: 200,
+		defaultPendingMinMs: 0,
 		defaultErrorComponent: RouteError,
 	});
 

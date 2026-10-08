@@ -17,7 +17,7 @@ export const Route = createFileRoute("/login")({
 	component: LoginPage,
 });
 
-function LoginPage() {
+function LoginPage(): React.JSX.Element {
 	const router = useRouter();
 	const [formError, setFormError] = useState<string | null>(null);
 	const form = useForm({
@@ -43,39 +43,49 @@ function LoginPage() {
 	});
 
 	return (
-		<main className="relative grid min-h-svh overflow-hidden lg:grid-cols-[1.1fr_0.9fr]">
-			<section className="relative hidden overflow-hidden bg-foreground p-10 text-white lg:flex lg:flex-col lg:justify-between">
-				<div className="absolute inset-x-0 bottom-0 h-2 bg-primary" />
-				<div className="absolute inset-x-0 bottom-2 h-1 bg-accent" />
-				<div className="relative flex items-center gap-3">
-					<BrandMark />
-					<span className="text-sm font-semibold text-white">Codekeat</span>
-				</div>
-				<div className="relative max-w-xl pb-12">
-					<h1 className="font-['Pixelify_Sans'] text-6xl font-semibold leading-[0.92] tracking-[-0.035em]">
+		<main className="login-page relative flex min-h-svh flex-col px-6 py-7 sm:px-10 sm:py-9 lg:px-16">
+			<header className="relative mx-auto flex w-full max-w-7xl items-center gap-3 text-white">
+				<BrandMark className="size-11" />
+				<span className="text-xl font-semibold tracking-tight">Codekeat</span>
+			</header>
+			<div className="relative mx-auto grid w-full max-w-7xl flex-1 items-center gap-10 py-12 lg:grid-cols-[1fr_440px] lg:gap-16 lg:py-16 xl:gap-28">
+				<section aria-label="Sobre o Codekeat" className="max-w-xl text-white">
+					<p className="mb-5 flex items-center gap-3 text-sm font-medium text-white/75">
+						<span
+							aria-hidden="true"
+							className="h-5 w-1.5 bg-primary shadow-[5px_0_0_#fc6701]"
+						/>
+						Seu próximo review começa aqui
+					</p>
+					<h2 className="font-display text-[clamp(2.75rem,5.5vw,5.5rem)] font-medium leading-[1.08] tracking-[-0.03em]">
 						Código melhor.
 						<br />
 						Sinal mais claro.
-					</h1>
-					<p className="mt-6 max-w-md text-[0.95rem] leading-6 text-white/60">
-						Acompanhe cada review consultiva, entenda custos e avalie a qualidade dos
-						findings em um único pulso.
-					</p>
-				</div>
-				<p className="relative text-sm font-medium text-white/60">
-					GitHub → Gemini + MCP → relatório consultivo
-				</p>
-			</section>
-			<section className="grid place-items-center border-l-[5px] border-accent bg-card/90 px-5 py-12 sm:px-10">
-				<div className="w-full max-w-sm">
-					<div className="mb-9 lg:hidden">
-						<BrandMark className="size-10" />
-					</div>
-					<h2 className="font-['Pixelify_Sans'] text-3xl font-semibold leading-tight tracking-[-0.025em]">
-						Acesse o painel
 					</h2>
-					<p className="mt-2 text-sm text-muted-foreground">
-						Use as credenciais provisionadas pela API.
+					<p className="mt-6 max-w-sm text-base leading-relaxed text-white/75">
+						Reviews de código com IA, conectadas ao GitHub. Acompanhe os findings, a
+						qualidade e o custo de cada execução.
+					</p>
+				</section>
+				<section
+					aria-labelledby="login-title"
+					className="login-panel relative w-full rounded-2xl border-2 border-[var(--hard-shadow)] bg-card px-6 py-8 text-card-foreground shadow-[6px_6px_0_var(--hard-shadow)] sm:p-10"
+				>
+					<div
+						aria-hidden="true"
+						className="absolute -top-0.5 left-10 flex h-1.5 w-16 overflow-hidden"
+					>
+						<span className="w-10 bg-primary" />
+						<span className="flex-1 bg-accent" />
+					</div>
+					<h1
+						id="login-title"
+						className="font-display text-4xl font-semibold leading-[1.08] tracking-[-0.02em]"
+					>
+						Entre no seu painel
+					</h1>
+					<p className="mt-3 text-base text-muted-foreground">
+						Suas reviews, em um só lugar.
 					</p>
 					<form
 						className="mt-8"
@@ -94,6 +104,11 @@ function LoginPage() {
 											<FieldLabel htmlFor={field.name}>E-mail</FieldLabel>
 											<Input
 												autoComplete="email"
+												aria-invalid={invalid}
+												aria-describedby={
+													invalid ? "email-error" : undefined
+												}
+												required
 												spellCheck={false}
 												id={field.name}
 												name={field.name}
@@ -101,12 +116,15 @@ function LoginPage() {
 												onChange={(event) =>
 													field.handleChange(event.target.value)
 												}
-												placeholder="Ex.: voce@empresa.com…"
+												placeholder="voce@empresa.com"
 												type="email"
 												value={field.state.value}
 											/>
 											{invalid ? (
-												<FieldError errors={field.state.meta.errors} />
+												<FieldError
+													id="email-error"
+													errors={field.state.meta.errors}
+												/>
 											) : null}
 										</Field>
 									);
@@ -121,6 +139,11 @@ function LoginPage() {
 											<FieldLabel htmlFor={field.name}>Senha</FieldLabel>
 											<Input
 												autoComplete="current-password"
+												aria-invalid={invalid}
+												aria-describedby={
+													invalid ? "password-error" : undefined
+												}
+												required
 												id={field.name}
 												name={field.name}
 												onBlur={field.handleBlur}
@@ -131,7 +154,10 @@ function LoginPage() {
 												value={field.state.value}
 											/>
 											{invalid ? (
-												<FieldError errors={field.state.meta.errors} />
+												<FieldError
+													id="password-error"
+													errors={field.state.meta.errors}
+												/>
 											) : null}
 										</Field>
 									);
@@ -146,7 +172,9 @@ function LoginPage() {
 						<form.Subscribe selector={(state) => [state.canSubmit, state.isSubmitting]}>
 							{([canSubmit, isSubmitting]) => (
 								<Button
-									className="mt-6 w-full justify-between"
+									className="mt-8 w-full justify-between"
+									size="lg"
+									aria-busy={isSubmitting}
 									disabled={!canSubmit || isSubmitting}
 									type="submit"
 								>
@@ -156,8 +184,15 @@ function LoginPage() {
 							)}
 						</form.Subscribe>
 					</form>
-				</div>
-			</section>
+					<p className="mt-7 text-sm text-muted-foreground">
+						Precisa de acesso? Solicite suas credenciais ao administrador do Codekeat.
+					</p>
+				</section>
+			</div>
+			<footer className="relative mx-auto flex w-full max-w-7xl flex-col gap-2 text-sm text-white/65 sm:flex-row sm:items-center sm:justify-between">
+				<p>Mais contexto para quem revisa. Mais confiança para quem entrega.</p>
+				<p className="shrink-0">Reviews consultivas. A decisão é sua.</p>
+			</footer>
 		</main>
 	);
 }
