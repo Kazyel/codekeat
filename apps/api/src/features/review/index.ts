@@ -16,6 +16,8 @@ export { ReviewReportPublisherService } from "./services/review-report-publisher
 export { ReviewRunProcessorService } from "./services/review-run-processor.service.js";
 export type {
 	FindingJudgment,
+	ReviewContextFile,
+	ReviewRepositoryContext,
 	ReviewFindingCandidate,
 	ReviewFindingEvidence,
 	ReviewFindingJudge,

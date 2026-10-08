@@ -1,16 +1,22 @@
 import parseDiff, { type Change, type Chunk, type File } from "parse-diff";
-import type { Probot } from "probot";
+import { z } from "zod";
 
 import type {
 	ReviewInputChunk,
 	ReviewInputLoadResult,
 	ReviewInputSource,
 	RunnableReviewRun,
+	ReviewRunIgnoreReason,
 } from "#features/review";
 import {
 	MAXIMUM_PULL_REQUEST_FILES,
 	MAXIMUM_REVIEW_CHUNK_LENGTH,
 } from "../constants/github.constants.js";
+import type { GitHubAccessRepository } from "../repositories/github-access.repository.js";
+import {
+	type GitHubReviewContentSource,
+	loadGitHubReviewContext,
+} from "./github-review-context.service.js";
 const MAXIMUM_ADJACENT_REFERENCE_LENGTH = 4_000;
 
 interface DiffSection {
@@ -18,58 +24,164 @@ interface DiffSection {
 	readonly diff: string;
 }
 
+const PULL_REQUEST_SCHEMA = z.object({
+	base: z.object({
+		repo: z.object({ id: z.number().int().positive() }),
+		sha: z.string().min(1),
+	}),
+	body: z.string().nullable(),
+	changed_files: z.number().int().nonnegative(),
+	draft: z.boolean(),
+	head: z.object({
+		sha: z.string().min(1),
+		repo: z.object({ full_name: z.string().regex(/^[^/]+\/[^/]+$/) }).nullable(),
+	}),
+	state: z.enum(["open", "closed"]),
+	title: z.string(),
+});
+
+type GitHubPullRequest = z.infer<typeof PULL_REQUEST_SCHEMA>;
+
+type PullRequestLocation = {
+	readonly owner: string;
+	readonly repo: string;
+	readonly pull_number: number;
+};
+
+interface GitHubReviewInputApp {
+	auth(githubInstallationId: number): Promise<{
+		readonly rest: {
+			readonly repos: GitHubReviewContentSource;
+			readonly pulls: {
+				get(location: PullRequestLocation): Promise<{ readonly data: unknown }>;
+			};
+		};
+		request(
+			route: "GET /repos/{owner}/{repo}/pulls/{pull_number}",
+			location: PullRequestLocation & { readonly headers: { readonly accept: string } },
+		): Promise<{ readonly data: unknown }>;
+	}>;
+}
+
 export class GitHubReviewInputService implements ReviewInputSource {
-	constructor(private readonly app: Probot) {}
+	constructor(
+		private readonly app: GitHubReviewInputApp,
+		private readonly accessRepository: GitHubAccessRepository,
+	) {}
 
 	async load(run: RunnableReviewRun): Promise<ReviewInputLoadResult> {
 		try {
 			const octokit = await this.app.auth(run.githubInstallationId);
 
-			const pullRequest = await octokit.rest.pulls.get({
+			const location = {
 				owner: run.repositoryOwner,
 				repo: run.repositoryName,
 				pull_number: run.pullRequestNumber,
-			});
-
-			if (pullRequest.data.head.sha !== run.headSha) {
-				return { kind: "ignored", ignoreReason: "superseded_head_sha" };
+			};
+			const response = await octokit.rest.pulls.get(location);
+			const pullRequest = PULL_REQUEST_SCHEMA.parse(response.data);
+			const ignoreReason = this.getInputIgnoreReason(pullRequest, run);
+			if (ignoreReason !== null) {
+				return { kind: "ignored", ignoreReason };
 			}
 
-			if (pullRequest.data.changed_files > MAXIMUM_PULL_REQUEST_FILES) {
+			if (pullRequest.changed_files > MAXIMUM_PULL_REQUEST_FILES) {
 				return { kind: "failed", errorCode: "github_diff_file_limit_exceeded" };
 			}
 
 			const diffResponse = await octokit.request(
 				"GET /repos/{owner}/{repo}/pulls/{pull_number}",
 				{
-					owner: run.repositoryOwner,
-					repo: run.repositoryName,
-					pull_number: run.pullRequestNumber,
+					...location,
 					headers: { accept: "application/vnd.github.diff" },
 				},
 			);
 
-			if (typeof diffResponse.data !== "string") {
-				return { kind: "failed", errorCode: "github_diff_unavailable" };
+			const diff = z.string().parse(diffResponse.data);
+			const currentResponse = await octokit.rest.pulls.get(location);
+			const currentPullRequest = PULL_REQUEST_SCHEMA.parse(currentResponse.data);
+			const currentIgnoreReason = this.getSnapshotIgnoreReason(
+				pullRequest,
+				currentPullRequest,
+				run,
+			);
+			if (currentIgnoreReason !== null) {
+				return { kind: "ignored", ignoreReason: currentIgnoreReason };
 			}
+			const chunks = createReviewInputChunks(diff);
+			const repositoryContext = await loadGitHubReviewContext(
+				octokit.rest.repos,
+				headRepositoryFullName(pullRequest.head.repo),
+				run.headSha,
+				chunks,
+			);
 
 			return {
 				kind: "ready",
 				input: {
-					body: pullRequest.data.body,
-					chunks: createReviewInputChunks(diffResponse.data),
+					baseSha: pullRequest.base.sha,
+					body: pullRequest.body,
+					chunks,
 					headSha: run.headSha,
 					githubInstallationAccountLogin: run.githubInstallationAccountLogin,
 					pullRequestNumber: run.pullRequestNumber,
 					repositoryFullName: run.repositoryFullName,
 					reviewRunId: run.id,
-					title: pullRequest.data.title,
+					repositoryContext,
+					title: pullRequest.title,
 				},
 			};
 		} catch {
 			return { kind: "failed", errorCode: "github_diff_unavailable" };
 		}
 	}
+
+	private getSnapshotIgnoreReason(
+		previous: GitHubPullRequest,
+		current: GitHubPullRequest,
+		run: RunnableReviewRun,
+	): ReviewRunIgnoreReason | null {
+		const ignoreReason = this.getInputIgnoreReason(current, run);
+		if (ignoreReason !== null) {
+			return ignoreReason;
+		}
+		return previous.base.sha === current.base.sha ? null : "superseded_base_sha";
+	}
+
+	private getInputIgnoreReason(
+		pullRequest: GitHubPullRequest,
+		run: RunnableReviewRun,
+	): ReviewRunIgnoreReason | null {
+		const installation = this.accessRepository.findInstallation(run.githubInstallationId);
+		if (installation?.status !== "active") {
+			return "installation_not_active";
+		}
+		const repository = this.accessRepository.findRepository(
+			pullRequest.base.repo.id,
+			run.githubInstallationId,
+		);
+		if (repository?.status !== "active") {
+			return "repository_not_active";
+		}
+		return getPullRequestIgnoreReason(pullRequest, run.headSha);
+	}
+}
+
+function headRepositoryFullName(repository: GitHubPullRequest["head"]["repo"]): string | null {
+	return repository === null ? null : repository.full_name;
+}
+
+function getPullRequestIgnoreReason(
+	pullRequest: GitHubPullRequest,
+	headSha: string,
+): ReviewRunIgnoreReason | null {
+	if (pullRequest.state !== "open") {
+		return "closed_pull_request";
+	}
+	if (pullRequest.draft) {
+		return "draft_pull_request";
+	}
+	return pullRequest.head.sha === headSha ? null : "superseded_head_sha";
 }
 
 export function createReviewInputChunks(diff: string): readonly ReviewInputChunk[] {

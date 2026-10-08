@@ -68,6 +68,13 @@ const CHUNK: ReviewInputChunk = {
 };
 
 const INPUT: ReviewInput = {
+	baseSha: "base-sha",
+	repositoryContext: {
+		repositoryFullName: "takeat/example",
+		revision: "head-sha",
+		files: [],
+		omittedFileCount: 0,
+	},
 	body: null,
 	chunks: [CHUNK],
 	headSha: "head-sha",
