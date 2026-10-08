@@ -29,14 +29,16 @@
 		"typecheck": "tsc --noEmit"
 	},
 	"dependencies": {
+		"@ai-sdk/google": "catalog:",
 		"@codekeat/database": "workspace:*",
-		"@google/genai": "catalog:",
 		"@modelcontextprotocol/sdk": "catalog:",
 		"@octokit/rest": "catalog:",
 		"@opentelemetry/api": "catalog:",
+		"ai": "catalog:",
 		"argon2": "catalog:",
 		"dotenv": "catalog:",
 		"drizzle-orm": "catalog:",
+		"effect": "catalog:",
 		"hono": "catalog:",
 		"minimatch": "catalog:",
 		"p-queue": "catalog:",

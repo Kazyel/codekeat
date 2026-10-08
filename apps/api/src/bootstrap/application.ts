@@ -1,3 +1,4 @@
+import { createGoogle } from "@ai-sdk/google";
 import {
 	createDatabaseConnection,
 	type DatabaseConnection,
@@ -81,7 +82,7 @@ export async function configureApplication(
 		);
 
 		const model = new GeminiReviewService(
-			environment.googleApiKey,
+			createGoogle({ apiKey: environment.googleApiKey }),
 			new TakeatMcpTool(environment.takeatMcpUrl, takeatMcpAccessTokenService, app.log),
 			app.log,
 		);

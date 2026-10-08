@@ -19,6 +19,17 @@ export interface ReviewRepositoryContext {
 	readonly omittedFileCount: number;
 }
 
+export interface ReviewContextExchange {
+	readonly tool: string;
+	readonly argumentsJson: string;
+	readonly responseJson: string;
+}
+
+export type ReviewInvestigation =
+	| { readonly kind: "available"; readonly exchanges: readonly ReviewContextExchange[] }
+	| { readonly kind: "unavailable" }
+	| { readonly kind: "not_enabled" };
+
 export interface ReviewInputChunk {
 	readonly changedLines: ReadonlyMap<string, ReadonlySet<number>>;
 	readonly diff: string;
@@ -49,6 +60,7 @@ export interface ReviewTokenUsage {
 
 export interface ReviewModelResult {
 	readonly findings: readonly ReviewFinding[];
+	readonly investigation: ReviewInvestigation;
 	readonly usage: ReviewTokenUsage;
 }
 export type FindingJudgment =
@@ -65,6 +77,7 @@ export interface ReviewFindingEvidence {
 	readonly diff: string;
 	readonly referenceBefore: string;
 	readonly referenceAfter: string;
+	readonly investigation: ReviewInvestigation;
 }
 
 export interface ReviewFindingCandidate {

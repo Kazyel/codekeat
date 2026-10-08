@@ -55,8 +55,16 @@ describe("review finding evidence", () => {
 	it("deduplicates evidence for findings in the same hunk", () => {
 		const chunk = createChunk(simpleDiff("src/example.ts", ["+first", "+second"]), 1);
 		const batches = createReviewFindingJudgeBatches([
-			{ chunk, finding: { ...BASE_FINDING, line: 1 } },
-			{ chunk, finding: { ...BASE_FINDING, line: 2, title: "Second failure" } },
+			{
+				chunk,
+				investigation: { kind: "not_enabled" },
+				finding: { ...BASE_FINDING, line: 1 },
+			},
+			{
+				chunk,
+				investigation: { kind: "not_enabled" },
+				finding: { ...BASE_FINDING, line: 2, title: "Second failure" },
+			},
 		]);
 
 		expect(batches).toHaveLength(1);
@@ -71,6 +79,7 @@ describe("review finding evidence", () => {
 		const chunk = createChunk(simpleDiff("src/example.ts", ["+line"]), 1);
 		const candidates = Array.from({ length: MAXIMUM_JUDGE_BATCH_FINDINGS + 1 }, (_, index) => ({
 			chunk,
+			investigation: { kind: "not_enabled" as const },
 			finding: { ...BASE_FINDING, line: 1, title: `Failure ${index}` },
 		}));
 
@@ -82,6 +91,26 @@ describe("review finding evidence", () => {
 		);
 	});
 
+	it("includes MCP exchanges in the batch budget without losing evidence across chunks", () => {
+		const candidates = Array.from({ length: 4 }, (_, index) => ({
+			chunk: createChunk(simpleDiff(`src/file-${index}.ts`, ["+line"]), index + 1),
+			finding: { ...BASE_FINDING, path: `src/file-${index}.ts`, line: 1 },
+			investigation: {
+				kind: "available" as const,
+				exchanges: [
+					{ tool: "read_file", argumentsJson: "{}", responseJson: "x".repeat(24_000) },
+				],
+			},
+		}));
+
+		const batches = createReviewFindingJudgeBatches(candidates);
+
+		expect(batches?.map((batch) => batch.findings.length)).toEqual([3, 1]);
+		expect(
+			batches?.flatMap((batch) => batch.input.evidence.map((entry) => entry.investigation)),
+		).toEqual(candidates.map((candidate) => candidate.investigation));
+	});
+
 	it("separates batches above the evidence limit and keeps an oversized hunk intact", () => {
 		const firstLine = `+${"a".repeat(49_000)}`;
 		const secondLine = `+${"b".repeat(49_000)}`;
@@ -90,9 +119,21 @@ describe("review finding evidence", () => {
 		const second = createChunk(simpleDiff("src/second.ts", [secondLine]), 2);
 		const oversized = createChunk(simpleDiff("src/oversized.ts", [oversizedLine]), 3);
 		const batches = createReviewFindingJudgeBatches([
-			{ chunk: first, finding: { ...BASE_FINDING, path: "src/first.ts", line: 1 } },
-			{ chunk: second, finding: { ...BASE_FINDING, path: "src/second.ts", line: 1 } },
-			{ chunk: oversized, finding: { ...BASE_FINDING, path: "src/oversized.ts", line: 1 } },
+			{
+				chunk: first,
+				investigation: { kind: "not_enabled" },
+				finding: { ...BASE_FINDING, path: "src/first.ts", line: 1 },
+			},
+			{
+				chunk: second,
+				investigation: { kind: "not_enabled" },
+				finding: { ...BASE_FINDING, path: "src/second.ts", line: 1 },
+			},
+			{
+				chunk: oversized,
+				investigation: { kind: "not_enabled" },
+				finding: { ...BASE_FINDING, path: "src/oversized.ts", line: 1 },
+			},
 		]);
 
 		expect(batches).toHaveLength(3);

@@ -69,6 +69,21 @@ class RecordedModel implements ReviewModel {
 		this.chunkIndexes.push(chunk.index);
 		return {
 			findings: this.responses[chunk.index - 1] ?? [],
+			investigation: {
+				kind: "available",
+				exchanges: [
+					{
+						tool: "read_file",
+						argumentsJson: JSON.stringify({
+							path: `caller-${chunk.index}.ts`,
+							ref: HEAD_SHA,
+						}),
+						responseJson: JSON.stringify({
+							content: [{ type: "text", text: `validated caller ${chunk.index}` }],
+						}),
+					},
+				],
+			},
 			usage: REVIEW_USAGE,
 		};
 	}
@@ -121,6 +136,18 @@ describe("ReviewRunProcessorService", () => {
 		expect(inputSource.githubInstallationAccountLogins).toEqual(["takeat"]);
 		expect(judge.batches).toHaveLength(1);
 		expect(judge.batches[0]?.candidates).toHaveLength(1);
+		expect(judge.batches[0]?.evidence[0]?.investigation).toEqual({
+			kind: "available",
+			exchanges: [
+				{
+					tool: "read_file",
+					argumentsJson: JSON.stringify({ path: "caller-1.ts", ref: HEAD_SHA }),
+					responseJson: JSON.stringify({
+						content: [{ type: "text", text: "validated caller 1" }],
+					}),
+				},
+			],
+		});
 		expect(database.connection.db.select().from(findings).all()).toMatchObject([
 			{ judgeVerdict: "approved", includedInReport: true },
 		]);
@@ -138,7 +165,7 @@ describe("ReviewRunProcessorService", () => {
 			judgeCallCount: 1,
 			reviewChunkCount: 2,
 			changedLineCount: 1,
-			reviewStrategyVersion: "compact-judge-v3",
+			reviewStrategyVersion: "repository-context-v4",
 		});
 		database.close();
 	});
@@ -202,7 +229,7 @@ describe("ReviewRunProcessorService", () => {
 		expect(readRun(database)).toMatchObject({
 			status: "completed",
 			judgeCallCount: 1,
-			reviewStrategyVersion: "compact-judge-v3",
+			reviewStrategyVersion: "repository-context-v4",
 		});
 		database.close();
 	});

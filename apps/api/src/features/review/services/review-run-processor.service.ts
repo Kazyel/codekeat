@@ -11,6 +11,7 @@ import type {
 	ReviewInput,
 	ReviewInputLoadResult,
 	ReviewInputSource,
+	ReviewInvestigation,
 	ReviewModel,
 	ReviewTokenUsage,
 } from "../types/review-input.types.js";
@@ -25,7 +26,7 @@ import {
 	type ChunkFindingCandidate,
 	type ReviewFindingJudgeBatch,
 } from "../utils/review-finding-evidence.util.js";
-const REVIEW_STRATEGY_VERSION = "compact-judge-v3";
+const REVIEW_STRATEGY_VERSION = "repository-context-v4";
 const EMPTY_USAGE: ReviewTokenUsage = {
 	inputTokens: 0,
 	outputTokens: 0,
@@ -151,7 +152,13 @@ export class ReviewRunProcessorService {
 				return result;
 			}
 			usage = addUsage(usage, result.usage);
-			candidates.push(...result.findings.map((finding) => ({ chunk, finding })));
+			candidates.push(
+				...result.findings.map((finding) => ({
+					chunk,
+					finding,
+					investigation: result.investigation,
+				})),
+			);
 		}
 
 		return { kind: "completed", candidates: deduplicateCandidates(candidates), usage };
@@ -259,6 +266,7 @@ export class ReviewRunProcessorService {
 		| {
 				readonly kind: "completed";
 				readonly findings: readonly ReviewFinding[];
+				readonly investigation: ReviewInvestigation;
 				readonly usage: ReviewTokenUsage;
 		  }
 		| { readonly kind: "failed"; readonly errorCode: ReviewRunErrorCode }
@@ -269,7 +277,12 @@ export class ReviewRunProcessorService {
 				return { kind: "failed", errorCode: "finding_location_invalid" };
 			}
 
-			return { kind: "completed", findings: result.findings, usage: result.usage };
+			return {
+				kind: "completed",
+				findings: result.findings,
+				investigation: result.investigation,
+				usage: result.usage,
+			};
 		} catch (error) {
 			if (error instanceof ReviewModelResponseError) {
 				this.logger.warn(
