@@ -1,4 +1,5 @@
 export type ReviewModelResponseIssue =
+	| "context_response_invalid"
 	| "invalid_json"
 	| "missing_text"
 	| "schema_invalid"
