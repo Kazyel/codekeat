@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 
+import { Data, Effect, Result } from "effect";
 import type { Logger } from "pino";
 
 import { ReviewModelResponseError } from "../errors/review-model.error.js";
@@ -11,8 +12,8 @@ import type {
 	ReviewInput,
 	ReviewInputLoadResult,
 	ReviewInputSource,
-	ReviewInvestigation,
 	ReviewModel,
+	ReviewModelResult,
 	ReviewTokenUsage,
 } from "../types/review-input.types.js";
 import type {
@@ -35,16 +36,29 @@ const EMPTY_USAGE: ReviewTokenUsage = {
 };
 
 interface CompletedReview {
-	readonly kind: "completed";
 	readonly findings: readonly StoredFinding[];
 	readonly reviewUsage: ReviewTokenUsage;
 	readonly judgeUsage: ReviewTokenUsage;
 	readonly judgeCallCount: number;
 }
 
-type ProcessReviewResult =
-	| CompletedReview
-	| { readonly kind: "failed"; readonly errorCode: ReviewRunErrorCode };
+class ReviewProcessingFailure extends Data.TaggedError("ReviewProcessingFailure")<{
+	readonly errorCode: ReviewRunErrorCode;
+}> {}
+
+interface GeneratedCandidates {
+	readonly candidates: readonly ChunkFindingCandidate[];
+	readonly usage: ReviewTokenUsage;
+}
+
+interface JudgedBatch {
+	readonly findings: readonly StoredFinding[];
+	readonly usage: ReviewTokenUsage;
+}
+
+interface JudgedCandidates extends JudgedBatch {
+	readonly callCount: number;
+}
 
 export class ReviewRunProcessorService {
 	constructor(
@@ -65,7 +79,16 @@ export class ReviewRunProcessorService {
 		const startedAt = performance.now();
 		this.logger.info({ modelName: run.model.apiName, reviewRunId }, "review_run.started");
 
-		const inputResult = await this.loadInput(run);
+		const inputResult = await Effect.runPromise(
+			this.loadInput(run).pipe(
+				Effect.catch((error) =>
+					Effect.succeed<ReviewInputLoadResult>({
+						kind: "failed",
+						errorCode: error.errorCode,
+					}),
+				),
+			),
+		);
 		if (inputResult.kind === "ignored") {
 			this.repository.ignoreReviewRun(reviewRunId, inputResult.ignoreReason);
 			this.logIgnoredRun(run, inputResult.ignoreReason, startedAt);
@@ -77,11 +100,14 @@ export class ReviewRunProcessorService {
 			return;
 		}
 
-		const reviewResult = await this.review(run.model, inputResult.input);
-		if (reviewResult.kind === "failed") {
-			this.fail(run, reviewResult.errorCode, startedAt);
+		const analysis = await Effect.runPromise(
+			this.review(run.model, inputResult.input).pipe(Effect.result),
+		);
+		if (Result.isFailure(analysis)) {
+			this.fail(run, analysis.failure.errorCode, startedAt);
 			return;
 		}
+		const reviewResult = analysis.success;
 
 		const durationMs = elapsedMilliseconds(startedAt);
 		const reviewReportId = this.repository.completeReviewRun(reviewRunId, {
@@ -109,195 +135,167 @@ export class ReviewRunProcessorService {
 		);
 	}
 
-	private async review(
+	private review(
 		model: RunnableReviewRun["model"],
 		input: ReviewInput,
-	): Promise<ProcessReviewResult> {
-		const generated = await this.generateCandidates(model, input);
-		if (generated.kind === "failed") {
-			return generated;
-		}
-
-		const judged = await this.judgeCandidates(model, input, generated.candidates);
-		if (judged.kind === "failed") {
-			return judged;
-		}
-
-		return {
-			kind: "completed",
-			findings: judged.findings,
-			reviewUsage: roundUsageCost(generated.usage),
-			judgeUsage: roundUsageCost(judged.usage),
-			judgeCallCount: judged.callCount,
-		};
+	): Effect.Effect<CompletedReview, ReviewProcessingFailure> {
+		return Effect.gen({ self: this }, function* () {
+			const generated = yield* this.generateCandidates(model, input);
+			const judged = yield* this.judgeCandidates(model, input, generated.candidates);
+			return {
+				findings: judged.findings,
+				reviewUsage: roundUsageCost(generated.usage),
+				judgeUsage: roundUsageCost(judged.usage),
+				judgeCallCount: judged.callCount,
+			};
+		});
 	}
 
-	private async generateCandidates(
+	private generateCandidates(
 		model: RunnableReviewRun["model"],
 		input: ReviewInput,
-	): Promise<
-		| {
-				readonly kind: "completed";
-				readonly candidates: readonly ChunkFindingCandidate[];
-				readonly usage: ReviewTokenUsage;
-		  }
-		| { readonly kind: "failed"; readonly errorCode: ReviewRunErrorCode }
-	> {
-		const candidates: ChunkFindingCandidate[] = [];
-		let usage = EMPTY_USAGE;
-
-		for (const chunk of input.chunks) {
-			const result = await this.reviewChunk(model, input, chunk);
-			if (result.kind === "failed") {
-				return result;
-			}
-			usage = addUsage(usage, result.usage);
-			candidates.push(
-				...result.findings.map((finding) => ({
+	): Effect.Effect<GeneratedCandidates, ReviewProcessingFailure> {
+		return Effect.gen({ self: this }, function* () {
+			const results = yield* Effect.forEach(
+				input.chunks,
+				(chunk) =>
+					this.reviewChunk(model, input, chunk).pipe(
+						Effect.map((result) => ({ chunk, result })),
+					),
+				{ concurrency: 1 },
+			);
+			const candidates = results.flatMap(({ chunk, result }) =>
+				result.findings.map((finding) => ({
 					chunk,
 					finding,
 					investigation: result.investigation,
 				})),
 			);
-		}
-
-		return { kind: "completed", candidates: deduplicateCandidates(candidates), usage };
+			return {
+				candidates: deduplicateCandidates(candidates),
+				usage: results.reduce(
+					(usage, { result }) => addUsage(usage, result.usage),
+					EMPTY_USAGE,
+				),
+			};
+		});
 	}
 
-	private async judgeCandidates(
+	private judgeCandidates(
 		model: RunnableReviewRun["model"],
 		input: ReviewInput,
 		candidates: readonly ChunkFindingCandidate[],
-	): Promise<
-		| {
-				readonly kind: "completed";
-				readonly findings: readonly StoredFinding[];
-				readonly usage: ReviewTokenUsage;
-				readonly callCount: number;
-		  }
-		| { readonly kind: "failed"; readonly errorCode: ReviewRunErrorCode }
-	> {
-		const batches = createReviewFindingJudgeBatches(candidates);
-		if (batches === null) {
-			return { kind: "failed", errorCode: "finding_location_invalid" };
-		}
-
-		let usage = EMPTY_USAGE;
-
-		const findings: StoredFinding[] = [];
-		for (const batch of batches) {
-			const result = await this.judgeBatch(model, input, batch);
-			if (result.kind === "failed") {
-				return result;
+	): Effect.Effect<JudgedCandidates, ReviewProcessingFailure> {
+		return Effect.gen({ self: this }, function* () {
+			const batches = createReviewFindingJudgeBatches(candidates);
+			if (batches === null) {
+				return yield* new ReviewProcessingFailure({
+					errorCode: "finding_location_invalid",
+				});
 			}
-			usage = addUsage(usage, result.usage);
-			findings.push(...result.findings);
-		}
-
-		return { kind: "completed", findings, usage, callCount: batches.length };
+			const results = yield* Effect.forEach(
+				batches,
+				(batch) => this.judgeBatch(model, input, batch),
+				{ concurrency: 1 },
+			);
+			return {
+				findings: results.flatMap((result) => result.findings),
+				usage: results.reduce(
+					(usage, result) => addUsage(usage, result.usage),
+					EMPTY_USAGE,
+				),
+				callCount: batches.length,
+			};
+		});
 	}
 
-	private async judgeBatch(
+	private judgeBatch(
 		model: RunnableReviewRun["model"],
 		input: ReviewInput,
 		batch: ReviewFindingJudgeBatch,
-	): Promise<
-		| {
-				readonly kind: "completed";
-				readonly findings: readonly StoredFinding[];
-				readonly usage: ReviewTokenUsage;
-		  }
-		| { readonly kind: "failed"; readonly errorCode: ReviewRunErrorCode }
-	> {
-		try {
-			const result = await this.judge.judge(model, input, batch.input);
+	): Effect.Effect<JudgedBatch, ReviewProcessingFailure> {
+		return Effect.gen({ self: this }, function* () {
+			const fields = {
+				candidateCount: batch.findings.length,
+				modelName: model.apiName,
+				reviewRunId: input.reviewRunId,
+			};
+			const result = yield* Effect.tryPromise({
+				try: () => this.judge.judge(model, input, batch.input),
+				catch: (error) => this.modelFailure(error, "judge", fields),
+			});
 			const validation = validateJudgments(batch.findings, result.judgments);
 			if (validation.kind === "invalid") {
 				this.logger.warn(
 					{
-						candidateCount: batch.findings.length,
+						...fields,
 						judgmentCount: result.judgments.length,
-						modelName: model.apiName,
 						reason: validation.reason,
-						reviewRunId: input.reviewRunId,
 					},
 					"gemini_judge.invalid_response",
 				);
-				return { kind: "failed", errorCode: "gemini_judge_invalid_response" };
+				return yield* new ReviewProcessingFailure({
+					errorCode: "gemini_judge_invalid_response",
+				});
 			}
-
 			return {
-				kind: "completed",
 				findings: batch.findings.map((finding, index) =>
 					toStoredFinding(finding, validation.judgments[index]!),
 				),
 				usage: result.usage,
 			};
-		} catch (error) {
-			if (error instanceof ReviewModelResponseError) {
-				this.logger.warn(
-					{
-						candidateCount: batch.findings.length,
-						modelName: model.apiName,
-						reason: error.issue,
-						reviewRunId: input.reviewRunId,
-					},
-					"gemini_judge.invalid_response",
-				);
-				return { kind: "failed", errorCode: "gemini_judge_invalid_response" };
-			}
-			return { kind: "failed", errorCode: "gemini_judge_request_failed" };
-		}
+		});
 	}
 
-	private async loadInput(run: RunnableReviewRun): Promise<ReviewInputLoadResult> {
-		try {
-			return await this.inputSource.load(run);
-		} catch {
-			return { kind: "failed", errorCode: "github_diff_unavailable" };
-		}
+	private loadInput(
+		run: RunnableReviewRun,
+	): Effect.Effect<ReviewInputLoadResult, ReviewProcessingFailure> {
+		return Effect.tryPromise({
+			try: () => this.inputSource.load(run),
+			catch: () => new ReviewProcessingFailure({ errorCode: "github_diff_unavailable" }),
+		});
 	}
 
-	private async reviewChunk(
+	private reviewChunk(
 		model: RunnableReviewRun["model"],
 		input: ReviewInput,
 		chunk: ReviewInput["chunks"][number],
-	): Promise<
-		| {
-				readonly kind: "completed";
-				readonly findings: readonly ReviewFinding[];
-				readonly investigation: ReviewInvestigation;
-				readonly usage: ReviewTokenUsage;
-		  }
-		| { readonly kind: "failed"; readonly errorCode: ReviewRunErrorCode }
-	> {
-		try {
-			const result = await this.model.review(model, input, chunk);
-			if (!result.findings.every((finding) => isValidFinding(finding, chunk))) {
-				return { kind: "failed", errorCode: "finding_location_invalid" };
-			}
-
-			return {
-				kind: "completed",
-				findings: result.findings,
-				investigation: result.investigation,
-				usage: result.usage,
-			};
-		} catch (error) {
-			if (error instanceof ReviewModelResponseError) {
-				this.logger.warn(
-					{
+	): Effect.Effect<ReviewModelResult, ReviewProcessingFailure> {
+		return Effect.gen({ self: this }, function* () {
+			const result = yield* Effect.tryPromise({
+				try: () => this.model.review(model, input, chunk),
+				catch: (error) =>
+					this.modelFailure(error, "review", {
 						chunkIndex: chunk.index,
 						modelName: model.apiName,
-						reason: error.issue,
 						reviewRunId: input.reviewRunId,
-					},
-					"gemini_review.invalid_response",
-				);
-				return { kind: "failed", errorCode: "gemini_invalid_response" };
+					}),
+			});
+			if (!result.findings.every((finding) => isValidFinding(finding, chunk))) {
+				return yield* new ReviewProcessingFailure({
+					errorCode: "finding_location_invalid",
+				});
 			}
-			return { kind: "failed", errorCode: "gemini_request_failed" };
+			return result;
+		});
+	}
+
+	private modelFailure(
+		error: unknown,
+		stage: "review" | "judge",
+		fields: Readonly<Record<string, string | number>>,
+	): ReviewProcessingFailure {
+		if (!(error instanceof ReviewModelResponseError)) {
+			return new ReviewProcessingFailure({
+				errorCode:
+					stage === "judge" ? "gemini_judge_request_failed" : "gemini_request_failed",
+			});
 		}
+		this.logger.warn({ ...fields, reason: error.issue }, `gemini_${stage}.invalid_response`);
+		return new ReviewProcessingFailure({
+			errorCode:
+				stage === "judge" ? "gemini_judge_invalid_response" : "gemini_invalid_response",
+		});
 	}
 
 	private logIgnoredRun(run: RunnableReviewRun, reason: string, startedAt: number): void {

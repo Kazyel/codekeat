@@ -410,15 +410,16 @@ describe("ReviewRunProcessorService", () => {
 		database.close();
 	});
 
-	it("fails without partial persistence for an invalid finding location", async () => {
+	it("stops later chunks and judging without partial persistence after an invalid location", async () => {
 		const database = createReviewRun();
 		const invalidFinding = { ...VALID_FINDING, line: 99 };
-		const processor = createProcessor(
-			database,
-			new ReadyInputSource(ONE_CHUNK_INPUT),
-			new RecordedModel([[invalidFinding]]),
-			new RecordedJudge(),
-		);
+		const model = new RecordedModel([[VALID_FINDING], [invalidFinding], [VALID_FINDING]]);
+		const judge = new RecordedJudge();
+		const input: ReviewInput = {
+			...ONE_CHUNK_INPUT,
+			chunks: [1, 2, 3].map((index) => ({ ...ONE_CHUNK_INPUT.chunks[0]!, index, total: 3 })),
+		};
+		const processor = createProcessor(database, new ReadyInputSource(input), model, judge);
 
 		await processor.process(REVIEW_RUN_ID);
 
@@ -427,6 +428,8 @@ describe("ReviewRunProcessorService", () => {
 			errorCode: "finding_location_invalid",
 		});
 		expect(database.connection.db.select().from(findings).all()).toEqual([]);
+		expect(model.chunkIndexes).toEqual([1, 2]);
+		expect(judge.batches).toEqual([]);
 		database.close();
 	});
 
