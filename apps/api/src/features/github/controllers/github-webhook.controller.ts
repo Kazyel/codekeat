@@ -1,20 +1,13 @@
 import type { Probot } from "probot";
 
 import type { RequestReview } from "#features/review";
-import type { GitHubAccessRepository } from "../repositories/github-access.repository.js";
 import type { WebhookDeliveryRepository } from "../repositories/webhook-delivery.repository.js";
+import type { GitHubInstallationSyncService } from "../services/github-installation-sync.service.js";
 import { GitHubRepositoryPolicyService } from "../services/github-repository-policy.service.js";
 import type { PullRequestContext } from "../types/github-events.types.js";
 import type { WebhookDelivery } from "../types/webhook-delivery.types.js";
 import { isDraftPullRequest, toRequestReview } from "../utils/github-webhook.util.js";
-import {
-	handleInstallationCreated,
-	handleInstallationDeleted,
-	handleInstallationSuspended,
-	handleInstallationUnsuspended,
-	handleRepositoriesAdded,
-	handleRepositoriesRemoved,
-} from "./github-installation.controller.js";
+import { registerGitHubInstallationHandlers } from "./github-installation.controller.js";
 
 interface PullRequestReviewEvent {
 	readonly delivery: WebhookDelivery;
@@ -28,9 +21,8 @@ interface PullRequestReviewResult {
 }
 
 export interface WebhookDependencies {
-	readonly accessRepository: GitHubAccessRepository;
+	readonly installationSync: GitHubInstallationSyncService;
 	readonly deliveryRepository: WebhookDeliveryRepository;
-	readonly allowedAccounts: ReadonlySet<string>;
 	readonly requestReview: (
 		event: PullRequestReviewEvent,
 		policyService: GitHubRepositoryPolicyService,
@@ -41,7 +33,7 @@ export function registerGitHubWebhookController(
 	app: Probot,
 	dependencies: WebhookDependencies,
 ): void {
-	registerInstallationHandlers(app, dependencies);
+	registerGitHubInstallationHandlers(app, dependencies);
 
 	app.on("pull_request.opened", (context) => handlePullRequest(context, dependencies, "opened"));
 	app.on("pull_request.reopened", (context) =>
@@ -54,33 +46,6 @@ export function registerGitHubWebhookController(
 
 	app.on("pull_request.synchronize", (context) =>
 		handlePullRequest(context, dependencies, "synchronize"),
-	);
-}
-
-function registerInstallationHandlers(app: Probot, dependencies: WebhookDependencies): void {
-	const installationDependencies = {
-		accessRepository: dependencies.accessRepository,
-		deliveryRepository: dependencies.deliveryRepository,
-		allowedAccounts: dependencies.allowedAccounts,
-	};
-
-	app.on("installation.created", (context) =>
-		handleInstallationCreated(context, installationDependencies),
-	);
-	app.on("installation.suspend", (context) =>
-		handleInstallationSuspended(context, installationDependencies),
-	);
-	app.on("installation.unsuspend", (context) =>
-		handleInstallationUnsuspended(context, installationDependencies),
-	);
-	app.on("installation.deleted", (context) =>
-		handleInstallationDeleted(context, installationDependencies),
-	);
-	app.on("installation_repositories.added", (context) =>
-		handleRepositoriesAdded(context, installationDependencies),
-	);
-	app.on("installation_repositories.removed", (context) =>
-		handleRepositoriesRemoved(context, installationDependencies),
 	);
 }
 

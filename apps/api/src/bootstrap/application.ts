@@ -15,6 +15,7 @@ import {
 import {
 	createGitHubConnectionReadController,
 	GitHubAccessRepository,
+	GitHubInstallationSyncService,
 	GitHubReviewInputService,
 	GitHubReviewPublicationService,
 	registerGitHubWebhookController,
@@ -114,13 +115,19 @@ export async function configureApplication(
 			app.log,
 		);
 
+		const installationSync = new GitHubInstallationSyncService(
+			app,
+			githubAccessRepository,
+			environment.allowedGithubAccounts,
+		);
+		await installationSync.initialize();
+
 		/*
 			Registro de webhooks para solicitações de revisão.
 		*/
 		registerGitHubWebhookController(app, {
-			accessRepository: githubAccessRepository,
+			installationSync,
 			deliveryRepository: webhookDeliveryRepository,
-			allowedAccounts: environment.allowedGithubAccounts,
 			requestReview: (event, policyService) =>
 				requestReviewFromGithub(event, {
 					accessRepository: githubAccessRepository,
