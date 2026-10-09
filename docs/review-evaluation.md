@@ -134,3 +134,41 @@ Os [contratos de contexto da v9](effect.md#contratos-de-contexto-e-otimização-
 descrevem a coleta inicial, o julgamento focal, a preservação dos artefatos completos e a política
 de raciocínio. O corpus precisa incluir controles negativos e defeitos em contratos distintos
 para avaliar essas mudanças. Os labels humanos permanecem fora de todo contexto enviado ao agente.
+
+## Medição inicial em 9 de outubro de 2026
+
+Uma rodada pareada do corpus `usage-contract-v1`, sem MCP remoto, comparou a baseline
+`eac692b987fc2d189d3a2ee3f2eea97559a39945` com a estratégia v9 em
+`509de627327f6884988b30405856cee5849c3803`. Ambas usaram `gemini-3.8-flash`, concorrência
+um, o mesmo manifest e o mesmo snapshot de preços: 750/75/3750 nano-USD por token de
+entrada/cache/saída. Os labels ficaram separados das inferências.
+
+| Caso                                  | Baseline  | v9        | Chamadas baseline / v9 | Custo baseline / v9         | Resultado em ambas                    |
+| ------------------------------------- | --------- | --------- | ---------------------- | --------------------------- | ------------------------------------- |
+| Defeito de cobrança com cache e saída | 113,907 s | 50,604 s  | 14 / 2                 | US$ 0,116674 / US$ 0,028969 | Um finding correto em `src/cost.ts:4` |
+| Controle negativo de uso vazio        | 397,300 s | 374,904 s | 22 / 4                 | US$ 0,326182 / US$ 0,232583 | Nenhum finding                        |
+
+Os dois casos concluíram a investigação. A conferência técnica reproduziu a cobrança:
+100 tokens de entrada, 100 em cache e 20 de saída devem custar 82,5 na unidade usada pela
+fixture; o defeito retorna zero. O controle conserva 82,5 para esse uso e zero para uso vazio.
+Não houve findings adicionais ou casos incompletos nesta rodada.
+
+No par, o tempo somado caiu de 511,207 para 425,508 segundos, cerca de 17%. As chamadas
+caíram de 36 para seis, cerca de 83%, e o custo conhecido caiu de US$ 0,442856 para
+US$ 0,261552, cerca de 41%. O input caiu de 534.771 para 71.055 tokens. Os tokens de saída
+ficaram próximos: 55.236 contra 55.536. A baseline registrou 244.975 tokens de cache; a v9
+não registrou cache nesta rodada. O prefixo estável favorece reutilização possível, mas não
+produziu ganho de cache mensurado neste par.
+
+O gargalo restante ficou explícito: a v9 registrou 52.406 tokens de raciocínio em seis
+recibos conhecidos. No controle negativo, duas chamadas consumiram 195 e 164 segundos e
+23.968 e 22.499 tokens de raciocínio. A descoberta independente para retornos financeiros
+permaneceu habilitada. Reduzir ferramentas sozinho não elimina esse tempo, e esta rodada
+não justifica diminuir a profundidade de decisões complexas sem avaliar outros casos.
+
+Este corpus tem apenas dois snapshots pequenos e uma execução por versão. Ele confirma os
+resultados esperados nesses exemplos, sem estimar precisão, recall ou p95 de PRs reais.
+Para decidir novos ajustes, repita em módulos distintos, inclua controles negativos e
+mantenha classificação humana independente. Os resultados integrais e os artefatos desta
+rodada ficaram no diretório privado `/tmp/codekeat-latency-20261009`; não dependem de uma
+publicação no GitHub.
