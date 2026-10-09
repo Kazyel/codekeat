@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 
-import { z } from "zod";
 import { Cause, Data, Effect, Exit, Result } from "effect";
 import type { Logger } from "pino";
 
@@ -43,7 +42,8 @@ import { ReviewWorkExecutor } from "./review-work-executor.service.js";
 import {
 	encodeReviewChunk,
 	decodeReviewChunk,
-	decodeReviewResult,
+	encodeReviewCheckpoint,
+	decodeReviewCheckpoint,
 	decodeJudgeBatch,
 	decodeStoredFindings,
 } from "../utils/review-work-codec.util.js";
@@ -53,7 +53,7 @@ import {
 	splitReviewChunk,
 	assertReviewCoverage,
 } from "../utils/review-work-planner.util.js";
-const REVIEW_STRATEGY_VERSION = "repository-context-v6";
+import { REVIEW_STRATEGY_VERSION } from "../types/review-conclusion.types.js";
 export interface ReviewProcessingOptions {
 	readonly unitConcurrency: number;
 	readonly getModelCapacity: (
@@ -309,12 +309,8 @@ export class ReviewRunProcessorService {
 							Effect.map((result) => ({ chunk, result })),
 						);
 					},
-					encode: (value) =>
-						JSON.stringify({
-							chunk: encodeReviewChunk(value.chunk),
-							result: value.result,
-						}),
-					decode: (json) => decodeReviewCheckpoint(json),
+					encode: encodeReviewCheckpoint,
+					decode: decodeReviewCheckpoint,
 					split: (unit, error) => {
 						if (!isDivisibleFailure(error)) return null;
 						return (
@@ -686,20 +682,6 @@ function elapsedMilliseconds(startedAt: number): number {
 function metricOutcome(outcome: ReviewStageOutcome): "success" | "failed" | "ignored" {
 	return outcome === "completed" ? "success" : outcome;
 }
-const reviewCheckpointSchema = z
-	.object({ chunk: z.string(), result: z.object({}).passthrough() })
-	.strict();
-function decodeReviewCheckpoint(json: string): {
-	readonly chunk: ReviewInput["chunks"][number];
-	readonly result: ReviewModelResult;
-} {
-	const checkpoint = reviewCheckpointSchema.parse(JSON.parse(json));
-	return {
-		chunk: decodeReviewChunk(checkpoint.chunk),
-		result: decodeReviewResult(JSON.stringify(checkpoint.result)),
-	};
-}
-
 function stagePhase(
 	stage: "context_load" | "candidate_generation" | "candidate_judgment",
 ): ReviewMetric["phase"] {

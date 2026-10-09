@@ -3,6 +3,7 @@ import type { ReviewRunErrorCode, RunnableReviewRun } from "./review-repository.
 import type { ReviewFinding, ReviewRunIgnoreReason } from "./review-run.types.js";
 import type { ReviewSourceCatalog, ReviewSourceReference } from "./review-source.types.js";
 import type { ReviewMetricRecorder } from "./review-metrics.types.js";
+import type { ReviewConclusion } from "./review-conclusion.types.js";
 
 export type ReviewContextFile =
 	| { readonly kind: "loaded"; readonly path: string; readonly content: string }
@@ -28,6 +29,12 @@ export interface ReviewContextExchange {
 }
 
 export type ReviewInvestigation =
+	| {
+			readonly kind: "verified";
+			readonly context: "available" | "unavailable" | "not_enabled";
+			readonly exchanges: readonly ReviewContextExchange[];
+			readonly conclusion: ReviewConclusion;
+	  }
 	| { readonly kind: "available"; readonly exchanges: readonly ReviewContextExchange[] }
 	| { readonly kind: "unavailable" }
 	| { readonly kind: "not_enabled" };
