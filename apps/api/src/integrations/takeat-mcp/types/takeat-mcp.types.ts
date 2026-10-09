@@ -9,6 +9,6 @@ export interface TakeatMcpToolDefinition {
 }
 
 export interface TakeatMcpContextSource {
-	listTools(): Promise<readonly TakeatMcpToolDefinition[]>;
-	callTool(name: string, args: McpJsonObject): Promise<McpJsonObject>;
+	listTools(signal?: AbortSignal): Promise<readonly TakeatMcpToolDefinition[]>;
+	callTool(name: string, args: McpJsonObject, signal?: AbortSignal): Promise<McpJsonObject>;
 }

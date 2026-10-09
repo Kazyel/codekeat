@@ -24,12 +24,12 @@ function textResponse(text: string): McpJsonObject {
 }
 
 describe("review context tool", () => {
-	it("records actual arguments and identical bounded evidence, isolated per attempt", async () => {
+	it("records actual arguments and identical complete evidence, isolated per attempt", async () => {
 		const source = createSource(textResponse("export const schema = required();"));
 		const tool = new ReviewContextTool(source);
 		const response = await tool.callTool("read_file", ARGS);
 
-		expect(source.callTool).toHaveBeenCalledWith("read_file", ARGS);
+		expect(source.callTool).toHaveBeenCalledWith("read_file", ARGS, undefined);
 		expect(tool.exchanges).toEqual([
 			{
 				tool: "read_file",
@@ -41,7 +41,7 @@ describe("review context tool", () => {
 		expect(new ReviewContextTool(source).exchanges).toEqual([]);
 	});
 
-	it("serializes concurrent calls to bound escaped results and stop fetching after the budget", async () => {
+	it("serializes concurrent calls while preserving complete escaped results", async () => {
 		const source = createSource(textResponse("\\".repeat(30_000)));
 		const tool = new ReviewContextTool(source);
 		const responses = await Promise.all(
@@ -50,28 +50,16 @@ describe("review context tool", () => {
 			),
 		);
 
-		expect(responses[0]).toMatchObject({ contextStatus: "truncated", sourceStatus: "success" });
-		expect(responses.at(-1)).toEqual({
-			contextStatus: "unavailable",
-			reason: "context_budget_exceeded",
-		});
-		expect(vi.mocked(source.callTool).mock.calls.length).toBeLessThan(16);
-		expect(
-			tool.exchanges.reduce(
-				(sum, exchange) =>
-					sum + exchange.argumentsJson.length + exchange.responseJson.length,
-				0,
-			),
-		).toBeLessThanOrEqual(28_000);
+		expect(source.callTool).toHaveBeenCalledTimes(16);
 		for (const [index, response] of responses.entries()) {
 			expect(JSON.stringify(response)).toBe(tool.exchanges[index]?.responseJson);
-			expect(JSON.stringify(response).length).toBeLessThanOrEqual(12_000);
+			expect(response).toEqual(textResponse("\\".repeat(30_000)));
 		}
 		expect(JSON.parse(tool.exchanges[0]?.argumentsJson ?? "{}")).toMatchObject({ order: 0 });
 		await expect(tool.callTool("read_file", ARGS)).rejects.toThrow(ReviewModelResponseError);
 	});
 
-	it("preserves tool errors, including their provenance after truncation", async () => {
+	it("preserves complete tool errors and their provenance", async () => {
 		const response = {
 			error: { content: [{ type: "text", text: "Revision not found" }], isError: true },
 		};
@@ -83,9 +71,8 @@ describe("review context tool", () => {
 				error: { content: [{ type: "text", text: "\\".repeat(20_000) }], isError: true },
 			}),
 		);
-		expect(await oversized.callTool("read_file", ARGS)).toMatchObject({
-			contextStatus: "truncated",
-			sourceStatus: "error",
+		expect(await oversized.callTool("read_file", ARGS)).toEqual({
+			error: { content: [{ type: "text", text: "\\".repeat(20_000) }], isError: true },
 		});
 	});
 
@@ -102,14 +89,29 @@ describe("review context tool", () => {
 		expect(tool.exchanges[0]?.responseJson).not.toContain("private-image");
 	});
 
-	it("rejects oversized arguments before remote execution", async () => {
+	it("accepts complete arguments without an artificial character limit", async () => {
 		const source = createSource(textResponse("valid"));
 		const tool = new ReviewContextTool(source);
-		await expect(tool.callTool("read_file", { query: "x".repeat(4_001) })).rejects.toThrow(
-			ReviewModelResponseError,
-		);
-		expect(source.callTool).not.toHaveBeenCalled();
-		expect(tool.exchanges).toEqual([]);
+		const args = { query: "x".repeat(4_001) };
+		expect(await tool.callTool("read_file", args)).toEqual(textResponse("valid"));
+		expect(source.callTool).toHaveBeenCalledWith("read_file", args, undefined);
+		expect(tool.exchanges[0]?.argumentsJson).toBe(JSON.stringify(args));
+	});
+
+	it("deduplicates identical concurrent lookups without repeating remote execution or evidence", async () => {
+		const source = createSource(textResponse("complete source"));
+		const tool = new ReviewContextTool(source);
+		const responses = await Promise.all([
+			tool.callTool("read_file", ARGS),
+			tool.callTool("read_file", { path: ARGS.path, ref: ARGS.ref, repo: ARGS.repo }),
+		]);
+
+		expect(source.callTool).toHaveBeenCalledTimes(1);
+		expect(tool.exchanges).toHaveLength(1);
+		expect(responses).toEqual([
+			textResponse("complete source"),
+			textResponse("complete source"),
+		]);
 	});
 
 	it("retains the first failure and cancels queued calls without fabricating evidence", async () => {

@@ -134,6 +134,25 @@ describe("TakeatMcpTool", () => {
 		expect(MOCKS.clientClose).toHaveBeenCalledOnce();
 	});
 
+	it("aborts in-flight MCP I/O and closes its session when the caller cancels", async () => {
+		MOCKS.clientCallTool.mockImplementationOnce(() => new Promise<never>(() => {}));
+		const { source, tokens } = createSource();
+		const controller = new AbortController();
+		const outcome = source.callTool("search_code", {}, controller.signal).then(
+			() => "completed",
+			() => "cancelled",
+		);
+		await vi.waitFor(() => expect(MOCKS.clientCallTool).toHaveBeenCalledOnce());
+		controller.abort();
+		await vi.waitFor(() =>
+			expect(MOCKS.clientCallTool.mock.calls[0]?.[2]?.signal?.aborted).toBe(true),
+		);
+		await expect(outcome).resolves.toBe("cancelled");
+		expect(tokens).toHaveBeenCalledOnce();
+		expect(MOCKS.transportTerminateSession).toHaveBeenCalledOnce();
+		expect(MOCKS.clientClose).toHaveBeenCalledOnce();
+	});
+
 	it.each(["blame_file", "delete_repository", "toString"])(
 		"rejects %s before requesting credentials or connecting",
 		async (name) => {

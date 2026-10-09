@@ -8,16 +8,17 @@ import {
 	NoOutputGeneratedError,
 	Output,
 	TypeValidationError,
-	type LanguageModelUsage,
 	type PrepareStepFunction,
 	type ToolSet,
 } from "ai";
+import { Effect } from "effect";
 import type { Logger } from "pino";
 import { z } from "zod";
 
 import { type TakeatMcpContextSource, TakeatMcpUnavailableError } from "#integrations/takeat-mcp";
 import type { ReviewModelConfiguration } from "#features/models";
 import {
+	type ReviewExecution,
 	type ReviewFindingJudge,
 	type ReviewFindingJudgeInput,
 	type ReviewFindingJudgment,
@@ -32,7 +33,14 @@ import {
 
 import { MAXIMUM_REMOTE_MCP_CALLS } from "../constants/gemini.constants.js";
 import { ReviewContextTool } from "../utils/review-context-tool.util.js";
-import { createReviewPrompt, createJudgePrompt } from "../utils/review-prompts.util.js";
+import {
+	createReviewPrompt,
+	createJudgePrompt,
+	createReviewSystemPrompt,
+	createJudgeSystemPrompt,
+} from "../utils/review-prompts.util.js";
+import { ReviewUsageRecorder } from "../utils/review-usage-recorder.util.js";
+import { ReviewContextCapacityExceeded } from "./google-context-capacity.service.js";
 
 const TAKEAT_GITHUB_ACCOUNT_LOGIN = "takeatgd";
 const GOOGLE_OPTIONS = {
@@ -85,25 +93,7 @@ const JUDGE_RESPONSE_SCHEMA = z
 	})
 	.strict();
 
-const TOKEN_COUNT_SCHEMA = z.number().int().nonnegative();
-const USAGE_SCHEMA = z
-	.object({
-		inputTokens: TOKEN_COUNT_SCHEMA,
-		outputTokens: TOKEN_COUNT_SCHEMA,
-		inputTokenDetails: z.object({
-			cacheReadTokens: TOKEN_COUNT_SCHEMA.optional().default(0),
-		}),
-	})
-	.refine((usage) => usage.inputTokenDetails.cacheReadTokens <= usage.inputTokens);
-const GOOGLE_USAGE_SCHEMA = z
-	.object({
-		promptTokenCount: TOKEN_COUNT_SCHEMA,
-		cachedContentTokenCount: TOKEN_COUNT_SCHEMA.optional().default(0),
-		candidatesTokenCount: TOKEN_COUNT_SCHEMA.optional().default(0),
-		thoughtsTokenCount: TOKEN_COUNT_SCHEMA.optional().default(0),
-		toolUsePromptTokenCount: TOKEN_COUNT_SCHEMA.optional().default(0),
-	})
-	.refine((usage) => usage.cachedContentTokenCount <= usage.promptTokenCount);
+const MODEL_REQUEST_TIMEOUT_MS = 5 * 60 * 1_000;
 
 export class GeminiReviewService implements ReviewModel, ReviewFindingJudge {
 	constructor(
@@ -116,12 +106,16 @@ export class GeminiReviewService implements ReviewModel, ReviewFindingJudge {
 		model: ReviewModelConfiguration,
 		input: ReviewInput,
 		chunk: ReviewInputChunk,
+		execution: ReviewExecution = defaultExecution(),
 	): Promise<ReviewModelResult> {
+		const usage = new ReviewUsageRecorder(model, "review", execution);
 		if (input.githubInstallationAccountLogin.toLowerCase() !== TAKEAT_GITHUB_ACCOUNT_LOGIN) {
 			return this.generateReview(
 				model,
 				createReviewPrompt(input, chunk, "not_enabled"),
 				"not_enabled",
+				usage,
+				execution,
 			);
 		}
 
@@ -129,7 +123,9 @@ export class GeminiReviewService implements ReviewModel, ReviewFindingJudge {
 			return await this.generateReview(
 				model,
 				createReviewPrompt(input, chunk, "available"),
-				new ReviewContextTool(this.takeatMcpTool),
+				this.takeatMcpTool,
+				usage,
+				execution,
 			);
 		} catch (error) {
 			if (!(error instanceof TakeatMcpUnavailableError)) throw error;
@@ -147,6 +143,8 @@ export class GeminiReviewService implements ReviewModel, ReviewFindingJudge {
 			model,
 			createReviewPrompt(input, chunk, "unavailable"),
 			"unavailable",
+			usage,
+			execution,
 		);
 	}
 
@@ -154,72 +152,105 @@ export class GeminiReviewService implements ReviewModel, ReviewFindingJudge {
 		model: ReviewModelConfiguration,
 		input: ReviewInput,
 		batch: ReviewFindingJudgeInput,
+		execution: ReviewExecution = defaultExecution(),
 	): Promise<{
 		readonly judgments: readonly ReviewFindingJudgment[];
 		readonly usage: ReviewTokenUsage;
 	}> {
+		const usage = new ReviewUsageRecorder(model, "judge", execution);
 		try {
-			const result = await generateText({
-				model: this.provider(model.apiName),
-				prompt: createJudgePrompt(input, batch),
-				output: Output.object({ schema: JUDGE_RESPONSE_SCHEMA }),
-				seed: 1,
-				temperature: 0,
-				providerOptions: { google: GOOGLE_OPTIONS },
-			});
-			validateStepUsage(result.steps.map((step) => step.usage));
+			const result = await runModelRequest(
+				(signal) =>
+					generateText({
+						abortSignal: signal,
+						onLanguageModelCallEnd: (event) =>
+							usage.record({ ...event, stepNumber: 0 }),
+						system: createJudgeSystemPrompt(),
+						model: this.provider(model.apiName),
+						prompt: createJudgePrompt(input, batch),
+						output: Output.object({ schema: JUDGE_RESPONSE_SCHEMA }),
+						seed: 1,
+						temperature: 0,
+						providerOptions: { google: GOOGLE_OPTIONS },
+					}),
+				execution.signal,
+			);
 			return {
 				judgments: result.output.judgments.map(({ index, ...judgment }) => ({
 					index,
 					judgment,
 				})),
-				usage: parseTokenUsage(result.totalUsage, model),
+				usage: usage.snapshot(),
 			};
 		} catch (error) {
+			usage.throwIfFailed();
 			throw normalizeModelError(error);
 		}
 	}
 
-	private async generateReview(
+	private generateReview(
 		model: ReviewModelConfiguration,
 		prompt: string,
-		context: ReviewContextTool | "unavailable" | "not_enabled",
+		context: TakeatMcpContextSource | "unavailable" | "not_enabled",
+		usage: ReviewUsageRecorder,
+		execution: ReviewExecution,
 	): Promise<ReviewModelResult> {
-		const recorder = typeof context === "string" ? null : context;
-		const investigationOptions = await prepareInvestigation(recorder);
-		try {
-			const result = await generateText({
-				model: this.provider(model.apiName),
-				prompt,
-				output: Output.object({ schema: REVIEW_RESPONSE_SCHEMA }),
-				seed: 1,
-				temperature: 0,
-				providerOptions: { google: GOOGLE_OPTIONS },
-				...investigationOptions,
-				stopWhen: isStepCount(MAXIMUM_REMOTE_MCP_CALLS + 1),
-			});
-			recorder?.throwIfFailed();
-			validateStepUsage(result.steps.map((step) => step.usage));
-			return {
-				findings: result.output.findings,
-				investigation: describeInvestigation(context),
-				usage: parseTokenUsage(result.totalUsage, model),
-			};
-		} catch (error) {
-			// Tool exceptions are tool-error results in the AI SDK, including on the final round.
-			recorder?.throwIfFailed();
-			throw normalizeModelError(error);
-		}
+		return runModelRequest(async (signal) => {
+			const investigation = createInvestigation(context, signal);
+			const recorder = typeof investigation === "string" ? null : investigation;
+			let stepNumber = 0;
+			const investigationOptions = await prepareInvestigation(recorder, usage);
+			try {
+				const result = await generateText({
+					abortSignal: signal,
+					onLanguageModelCallEnd: (event) => usage.record({ ...event, stepNumber }),
+					system: createReviewSystemPrompt(),
+					model: this.provider(model.apiName),
+					prompt,
+					output: Output.object({ schema: REVIEW_RESPONSE_SCHEMA }),
+					seed: 1,
+					temperature: 0,
+					providerOptions: { google: GOOGLE_OPTIONS },
+					...investigationOptions,
+					prepareStep: (args) => {
+						stepNumber = args.stepNumber;
+						return investigationOptions.prepareStep(args);
+					},
+					stopWhen: isStepCount(MAXIMUM_REMOTE_MCP_CALLS + 1),
+				});
+				recorder?.throwIfFailed();
+				return {
+					findings: result.output.findings,
+					investigation: describeInvestigation(investigation),
+					usage: usage.snapshot(),
+				};
+			} catch (error) {
+				usage.throwIfFailed();
+				recorder?.throwIfFailed();
+				throw error;
+			}
+		}, execution.signal);
 	}
 }
 
-async function prepareInvestigation(recorder: ReviewContextTool | null): Promise<{
+function createInvestigation(
+	context: TakeatMcpContextSource | "unavailable" | "not_enabled",
+	signal: AbortSignal,
+): ReviewContextTool | "unavailable" | "not_enabled" {
+	return typeof context === "string" ? context : new ReviewContextTool(context, signal);
+}
+
+async function prepareInvestigation(
+	recorder: ReviewContextTool | null,
+	usage: ReviewUsageRecorder,
+): Promise<{
 	readonly tools: ToolSet | undefined;
 	readonly prepareStep: PrepareStepFunction<ToolSet>;
 }> {
 	return {
 		tools: await recorder?.tools(),
 		prepareStep: ({ stepNumber }) => {
+			usage.throwIfFailed();
 			recorder?.throwIfFailed();
 			// Reserve the last round for structured output without tools.
 			if (stepNumber >= MAXIMUM_REMOTE_MCP_CALLS)
@@ -236,33 +267,27 @@ function describeInvestigation(
 	return { kind: "available", exchanges: context.exchanges };
 }
 
-function validateStepUsage(usages: readonly LanguageModelUsage[]): void {
-	for (const usage of usages) {
-		const raw = GOOGLE_USAGE_SCHEMA.safeParse(usage.raw);
-		const normalized = USAGE_SCHEMA.safeParse(usage);
-		if (!raw.success || !normalized.success) {
-			throw new ReviewModelResponseError("usage_metadata_invalid");
-		}
-	}
+function defaultExecution(): ReviewExecution {
+	return { signal: new AbortController().signal, recordUsage: () => {} };
 }
 
-function parseTokenUsage(
-	usage: LanguageModelUsage,
-	model: ReviewModelConfiguration,
-): ReviewTokenUsage {
-	const parsed = USAGE_SCHEMA.safeParse(usage);
-	if (!parsed.success) throw new ReviewModelResponseError("usage_metadata_invalid");
-	const { inputTokens, outputTokens } = parsed.data;
-	const cacheTokens = parsed.data.inputTokenDetails.cacheReadTokens;
-	const costUsdMicros =
-		((inputTokens - cacheTokens) * model.inputNanoUsdPerToken +
-			cacheTokens * model.cachedInputNanoUsdPerToken +
-			outputTokens * model.outputNanoUsdPerToken) /
-		1_000;
-	return { inputTokens, outputTokens, cacheTokens, costUsdMicros };
+function runModelRequest<T>(
+	request: (signal: AbortSignal) => Promise<T>,
+	parentSignal: AbortSignal,
+): Promise<T> {
+	return Effect.runPromise(
+		Effect.tryPromise({ try: request, catch: normalizeModelError }).pipe(
+			Effect.timeoutOrElse({
+				duration: MODEL_REQUEST_TIMEOUT_MS,
+				orElse: () => Effect.fail(new Error("The review model request timed out.")),
+			}),
+		),
+		{ signal: parentSignal },
+	);
 }
 
 function normalizeModelError(error: unknown): Error {
+	if (isExpectedModelError(error)) return error;
 	if (NoObjectGeneratedError.isInstance(error)) return normalizeOutputError(error);
 	const issue = [
 		{ matches: JSONParseError.isInstance, issue: "invalid_json" },
@@ -272,8 +297,16 @@ function normalizeModelError(error: unknown): Error {
 	] as const;
 	const match = issue.find((entry) => entry.matches(error));
 	if (match !== undefined) return new ReviewModelResponseError(match.issue);
-	if (error instanceof ReviewModelResponseError) return error;
+
 	return new Error("The review model request failed.");
+}
+
+function isExpectedModelError(error: unknown): error is Error {
+	return (
+		error instanceof ReviewContextCapacityExceeded ||
+		error instanceof TakeatMcpUnavailableError ||
+		error instanceof ReviewModelResponseError
+	);
 }
 
 function normalizeOutputError(error: NoObjectGeneratedError): ReviewModelResponseError {

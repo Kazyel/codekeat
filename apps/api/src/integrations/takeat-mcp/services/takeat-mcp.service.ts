@@ -59,11 +59,15 @@ export class TakeatMcpTool implements TakeatMcpContextSource {
 		private readonly logger: Logger,
 	) {}
 
-	listTools(): Promise<readonly TakeatMcpToolDefinition[]> {
-		return this.execute("tool_catalog", {}, (client) => readToolCatalog(client));
+	listTools(signal?: AbortSignal): Promise<readonly TakeatMcpToolDefinition[]> {
+		return this.execute("tool_catalog", {}, (client) => readToolCatalog(client), signal);
 	}
 
-	async callTool(name: string, args: McpJsonObject): Promise<McpJsonObject> {
+	async callTool(
+		name: string,
+		args: McpJsonObject,
+		signal?: AbortSignal,
+	): Promise<McpJsonObject> {
 		const fields = { toolName: name };
 		if (!isAllowedTool(name)) {
 			this.logger.warn(fields, "takeat_mcp.tool_call_rejected");
@@ -73,14 +77,18 @@ export class TakeatMcpTool implements TakeatMcpContextSource {
 		if (!parsedArgs.success) {
 			throw new TakeatMcpToolCallRejectedError();
 		}
-		return this.execute("tool_call", fields, (client) =>
-			mcpRequest((signal) =>
-				client.callTool(
-					{ name, arguments: parsedArgs.data },
-					undefined,
-					requestOptions(signal),
-				),
-			).pipe(Effect.flatMap(parseToolResult)),
+		return this.execute(
+			"tool_call",
+			fields,
+			(client) =>
+				mcpRequest((signal) =>
+					client.callTool(
+						{ name, arguments: parsedArgs.data },
+						undefined,
+						requestOptions(signal),
+					),
+				).pipe(Effect.flatMap(parseToolResult)),
+			signal,
 		);
 	}
 
@@ -88,6 +96,7 @@ export class TakeatMcpTool implements TakeatMcpContextSource {
 		operationName: "tool_catalog" | "tool_call",
 		fields: Readonly<Record<string, string>>,
 		operation: McpOperation<T>,
+		signal?: AbortSignal,
 	): Promise<T> {
 		const startedAt = performance.now();
 		this.logger.info(fields, `takeat_mcp.${operationName}_started`);
@@ -113,7 +122,7 @@ export class TakeatMcpTool implements TakeatMcpContextSource {
 				}),
 			),
 		);
-		return Effect.runPromise(program);
+		return Effect.runPromise(program, { signal });
 	}
 
 	private withAuthenticationRetry<T>(

@@ -12,14 +12,6 @@ import {
 } from "#integrations/takeat-mcp";
 
 const MAXIMUM_EXCHANGES = 16;
-const MAXIMUM_ARGUMENT_LENGTH = 4_000;
-const MAXIMUM_RESPONSE_LENGTH = 12_000;
-const MAXIMUM_CONTEXT_LENGTH = 24_000;
-const MINIMUM_RESPONSE_LENGTH = 200;
-const OMITTED_ARGUMENTS_JSON = JSON.stringify({
-	contextStatus: "omitted",
-	reason: "context_budget_exceeded",
-});
 const JSON_OBJECT_SCHEMA = z.record(z.string(), z.json());
 const TEXT_CONTENT_SCHEMA = z.object({
 	content: z.array(z.object({ type: z.literal("text"), text: z.string() })).optional(),
@@ -29,21 +21,24 @@ type ContextFailure =
 	| TakeatMcpToolCallRejectedError
 	| TakeatMcpUnavailableError;
 
-/** One attempt owns its evidence, budget and first failure. */
+/** One attempt owns complete, deduplicated evidence and its first failure. */
 export class ReviewContextTool {
 	private readonly recorded: ReviewContextExchange[] = [];
-	private remainingLength = MAXIMUM_CONTEXT_LENGTH;
+	private readonly responses = new Map<string, McpJsonObject>();
 	private readonly calls = Semaphore.makeUnsafe(1);
 	private failure: ContextFailure | null = null;
 
-	constructor(private readonly source: TakeatMcpContextSource) {}
+	constructor(
+		private readonly source: TakeatMcpContextSource,
+		private readonly signal?: AbortSignal,
+	) {}
 
 	get exchanges(): readonly ReviewContextExchange[] {
 		return [...this.recorded];
 	}
 
 	async tools(): Promise<ToolSet> {
-		const definitions = await this.source.listTools();
+		const definitions = await this.source.listTools(this.signal);
 		const validator = new AjvJsonSchemaValidator();
 		try {
 			return Object.fromEntries(
@@ -76,11 +71,12 @@ export class ReviewContextTool {
 	}
 
 	throwIfFailed(): void {
+		this.signal?.throwIfAborted();
 		if (this.failure !== null) throw this.failure;
 	}
 
 	callTool(name: string, args: McpJsonObject): Promise<McpJsonObject> {
-		// The AI SDK executes calls in parallel. Serialize admission and accounting.
+		// The AI SDK executes calls in parallel. Serialize admission and recording.
 		return Effect.runPromise(
 			this.calls.withPermit(
 				Effect.tryPromise({
@@ -100,31 +96,20 @@ export class ReviewContextTool {
 	private async callAndRecord(name: string, args: McpJsonObject): Promise<McpJsonObject> {
 		this.throwIfFailed();
 		const argumentsJson = JSON.stringify(args);
-		if (
-			argumentsJson.length > MAXIMUM_ARGUMENT_LENGTH ||
-			this.recorded.length >= MAXIMUM_EXCHANGES
-		) {
+		const key = JSON.stringify([name, orderedJson(args)]);
+		const cached = this.responses.get(key);
+		if (cached !== undefined) return cached;
+		if (this.recorded.length >= MAXIMUM_EXCHANGES) {
 			throw new ReviewModelResponseError("context_response_invalid");
 		}
-
-		const limit = Math.min(
-			MAXIMUM_RESPONSE_LENGTH,
-			this.remainingLength - argumentsJson.length,
-		);
-		const exhausted = limit < MINIMUM_RESPONSE_LENGTH;
-		const response = exhausted
-			? { contextStatus: "unavailable", reason: "context_budget_exceeded" }
-			: limitResponse(await this.source.callTool(name, args), limit);
+		const response = readableResponse(await this.source.callTool(name, args, this.signal));
 		const responseJson = JSON.stringify(response);
 		this.recorded.push({
 			tool: name,
-			argumentsJson: exhausted ? OMITTED_ARGUMENTS_JSON : argumentsJson,
+			argumentsJson,
 			responseJson,
 		});
-		this.remainingLength = Math.max(
-			0,
-			this.remainingLength - argumentsJson.length - responseJson.length,
-		);
+		this.responses.set(key, response);
 		return response;
 	}
 }
@@ -139,23 +124,20 @@ function normalizeContextFailure(error: unknown): ContextFailure {
 	return new ReviewModelResponseError("context_response_invalid");
 }
 
-function limitResponse(response: McpJsonObject, limit: number): McpJsonObject {
+function readableResponse(response: McpJsonObject): McpJsonObject {
 	const content = "error" in response ? response.error : response;
 	if (!TEXT_CONTENT_SCHEMA.safeParse(content).success) {
 		return { contextStatus: "unavailable", reason: "unsupported_content" };
 	}
-	const serialized = JSON.stringify(response);
-	if (serialized.length > limit) {
-		return {
-			contextStatus: "truncated",
-			sourceStatus: "error" in response ? "error" : "success",
-			// The JSON prefix is encoded again as a string; each character may double.
-			content: serialized.slice(
-				0,
-				Math.max(0, Math.floor((limit - MINIMUM_RESPONSE_LENGTH) / 2)),
-			),
-			warning: "Resposta incompleta; não use conteúdo omitido como evidência.",
-		};
-	}
 	return response;
+}
+
+function orderedJson(value: z.JSONType): z.JSONType {
+	if (value === null || typeof value !== "object") return value;
+	if (Array.isArray(value)) return value.map(orderedJson);
+	return Object.fromEntries(
+		Object.entries(value)
+			.sort(([left], [right]) => left.localeCompare(right))
+			.map(([key, entry]) => [key, orderedJson(entry)]),
+	);
 }

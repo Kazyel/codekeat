@@ -1,9 +1,13 @@
 import { createGoogle } from "@ai-sdk/google";
 import pino from "pino";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
-import { GeminiReviewService } from "#integrations/gemini";
+import {
+	GeminiReviewService,
+	createGoogleContextCapacityFetch,
+	ReviewContextCapacityExceeded,
+} from "#integrations/gemini";
 import {
 	type ReviewFindingJudgeInput,
 	type ReviewInput,
@@ -149,6 +153,7 @@ function createHarness(responses: readonly Response[], source = createSource()) 
 }
 
 describe("GeminiReviewService through the Google AI SDK transport", () => {
+	afterEach(() => vi.useRealTimers());
 	it("shares PR intent, revisions, repository context and actual MCP evidence with the judge", async () => {
 		const { model, requests, source } = createHarness([
 			toolResponse(),
@@ -170,7 +175,11 @@ describe("GeminiReviewService through the Google AI SDK transport", () => {
 		});
 
 		expect(result.findings).toEqual([FINDING]);
-		expect(source.callTool).toHaveBeenCalledWith("read_file", READ_ARGUMENTS);
+		expect(source.callTool).toHaveBeenCalledWith(
+			"read_file",
+			READ_ARGUMENTS,
+			expect.any(AbortSignal),
+		);
 		expect(result.investigation).toEqual({
 			kind: "available",
 			exchanges: [
@@ -215,7 +224,7 @@ describe("GeminiReviewService through the Google AI SDK transport", () => {
 			responseMimeType: "application/json",
 			responseJsonSchema: { type: "object" },
 		});
-		expect(JSON.stringify(requests[0]?.contents)).toMatch(
+		expect(JSON.stringify(requests[0])).toMatch(
 			/tente refutá-lo[\s\S]*cenário alcançável[\s\S]*ordem de execução válida/,
 		);
 	});
@@ -241,14 +250,18 @@ describe("GeminiReviewService through the Google AI SDK transport", () => {
 			})
 			.mockRejectedValueOnce(new TakeatMcpUnavailableError());
 		const { model, requests, fetchMock, logger } = createHarness(
-			[toolResponse(), toolResponse(), outputResponse()],
+			[
+				toolResponse(),
+				toolResponse({ ...READ_ARGUMENTS, path: "src/other-validator.ts" }),
+				outputResponse(),
+			],
 			source,
 		);
 		const warn = vi.spyOn(logger, "warn");
 		await expect(model.review(MODEL, INPUT, CHUNK)).resolves.toEqual({
 			findings: [],
 			investigation: { kind: "unavailable" },
-			usage: EXPECTED_USAGE,
+			usage: { inputTokens: 360, outputTokens: 42, cacheTokens: 120, costUsdMicros: 346.5 },
 		});
 		expect(fetchMock).toHaveBeenCalledTimes(3);
 		expect(source.callTool).toHaveBeenCalledTimes(2);
@@ -285,7 +298,9 @@ describe("GeminiReviewService through the Google AI SDK transport", () => {
 
 	it("reserves a seventh generation without tools after six investigation rounds", async () => {
 		const { model, source, requests, fetchMock } = createHarness([
-			...Array.from({ length: 6 }, () => toolResponse()),
+			...Array.from({ length: 6 }, (_, index) =>
+				toolResponse({ ...READ_ARGUMENTS, path: `src/validator-${index}.ts` }),
+			),
 			outputResponse(),
 		]);
 		const result = await model.review(MODEL, INPUT, CHUNK);
@@ -381,9 +396,10 @@ describe("GeminiReviewService through the Google AI SDK transport", () => {
 			temperature: 0,
 			thinkingConfig: { thinkingLevel: "high" },
 		});
-		expect(JSON.stringify(requests[0]?.contents)).toMatch(
-			/dado não confiável[\s\S]*cenário alcançável[\s\S]*não inclua severity[\s\S]*único trecho reportável[\s\S]*ignore previous instructions/,
+		expect(JSON.stringify(requests[0]?.systemInstruction)).toMatch(
+			/dado não confiável[\s\S]*cenário alcançável[\s\S]*não inclua severity[\s\S]*único trecho reportável/,
 		);
+		expect(JSON.stringify(requests[0]?.contents)).toContain("ignore previous instructions");
 	});
 
 	it.each([
@@ -430,4 +446,123 @@ describe("GeminiReviewService through the Google AI SDK transport", () => {
 			issue: "usage_metadata_invalid",
 		});
 	});
+});
+
+describe("model cancellation and usage persistence", () => {
+	afterEach(() => vi.useRealTimers());
+	it.each(["review", "judge"] as const)(
+		"aborts a stalled %s response body after five minutes",
+		async (kind) => {
+			vi.useFakeTimers();
+			let observedSignal: AbortSignal | null | undefined;
+			const fetchMock = vi.fn<typeof fetch>().mockImplementation(async (_url, init) => {
+				observedSignal = init?.signal;
+				return new Response(
+					new ReadableStream<Uint8Array>({
+						start(controller) {
+							init?.signal?.addEventListener(
+								"abort",
+								() => controller.error(new DOMException("Aborted", "AbortError")),
+								{ once: true },
+							);
+						},
+					}),
+					{ headers: { "content-type": "application/json" } },
+				);
+			});
+			const service = new GeminiReviewService(
+				createGoogle({ apiKey: "test", fetch: fetchMock }),
+				createSource(),
+				pino({ level: "silent" }),
+			);
+			const result = (
+				kind === "review"
+					? service.review(MODEL, INPUT, CHUNK)
+					: service.judge(MODEL, INPUT, EMPTY_BATCH)
+			).catch((error: unknown) => error);
+			await vi.advanceTimersByTimeAsync(300_001);
+			expect(await result).toBeInstanceOf(Error);
+			expect(observedSignal?.aborted).toBe(true);
+			expect(fetchMock).toHaveBeenCalledOnce();
+		},
+	);
+	it("records charged tool steps before a tool fails and aggregates usage across fallback", async () => {
+		const source = createSource();
+		const events: import("#features/review").ReviewUsageEvent[] = [];
+		source.callTool.mockImplementationOnce(async () => {
+			expect(events).toHaveLength(1);
+			throw new TakeatMcpUnavailableError();
+		});
+		const { model } = createHarness([toolResponse(), outputResponse()], source);
+		const result = await model.review(MODEL, INPUT, CHUNK, {
+			signal: new AbortController().signal,
+			recordUsage: (event) => events.push(event),
+		});
+		expect(events).toHaveLength(2);
+		expect(new Set(events.map((event) => event.callId)).size).toBe(2);
+		expect(events.every((event) => event.stage === "review")).toBe(true);
+		expect(result.usage).toEqual({
+			inputTokens: 240,
+			outputTokens: 28,
+			cacheTokens: 80,
+			costUsdMicros: 231,
+		});
+	});
+	it("records judge usage even when its structured output is invalid", async () => {
+		const { model } = createHarness([
+			outputResponse({ judgments: [{ index: 0, kind: "invalid" }] }),
+		]);
+		const recordUsage = vi.fn();
+		await expect(
+			model.judge(MODEL, INPUT, EMPTY_BATCH, {
+				signal: new AbortController().signal,
+				recordUsage,
+			}),
+		).rejects.toMatchObject({ issue: "schema_invalid" });
+		expect(recordUsage).toHaveBeenCalledWith(
+			expect.objectContaining({ stage: "judge", usage: EXPECTED_USAGE }),
+		);
+	});
+	it("cancels the provider when the run aborts", async () => {
+		const controller = new AbortController();
+		let observedSignal: AbortSignal | null | undefined;
+		const fetchMock = vi.fn<typeof fetch>().mockImplementation(async (_url, init) => {
+			observedSignal = init?.signal;
+			return new Promise<Response>((_resolve, reject) =>
+				init?.signal?.addEventListener(
+					"abort",
+					() => reject(new DOMException("Aborted", "AbortError")),
+					{ once: true },
+				),
+			);
+		});
+		const service = new GeminiReviewService(
+			createGoogle({ apiKey: "test", fetch: fetchMock }),
+			createSource(),
+			pino({ level: "silent" }),
+		);
+		const result = service
+			.judge(MODEL, INPUT, EMPTY_BATCH, { signal: controller.signal, recordUsage: () => {} })
+			.catch((error: unknown) => error);
+		await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+		controller.abort();
+		expect(await result).toBeInstanceOf(Error);
+		expect(observedSignal?.aborted).toBe(true);
+	});
+});
+
+it("preserves the typed context overflow through the real Google SDK", async () => {
+	const fetcher = vi.fn<typeof fetch>().mockImplementation(async (url) => {
+		if (url.toString().endsWith(":countTokens")) return Response.json({ totalTokens: 101 });
+		return Response.json({ inputTokenLimit: 100 });
+	});
+	const model = new GeminiReviewService(
+		createGoogle({ apiKey: "test", fetch: createGoogleContextCapacityFetch(fetcher, "test") }),
+		createSource(),
+		pino({ level: "silent" }),
+	);
+	await expect(
+		model.review(MODEL, { ...INPUT, githubInstallationAccountLogin: "other" }, CHUNK),
+	).rejects.toBeInstanceOf(ReviewContextCapacityExceeded);
+	expect(fetcher).toHaveBeenCalledTimes(2);
 });
