@@ -199,21 +199,49 @@ describe("review evidence provenance through Google transport", () => {
 		{ ...HEAD, revision: "different-head" },
 		{ ...HEAD, role: "investigation" as const, revision: "unconfirmed" },
 	])("rejects an ungrounded citation $path:$endLine at $revision", async (evidence) => {
-		const { model } = harness([output(conclusion(evidence))]);
+		const { model } = harness([output(conclusion(evidence)), output(conclusion(evidence))]);
 		await expect(model.review(MODEL, INPUT, CHUNK)).rejects.toMatchObject({
 			issue: "context_response_invalid",
 		});
 	});
 
 	it.each([
-		{ recorded: conclusion(HEAD, "candidate"), findings: [] },
-		{ recorded: conclusion(HEAD), findings: [FINDING] },
-	])("rejects a candidate/finding mismatch", async ({ recorded, findings }) => {
-		const { model } = harness([output(recorded, findings)]);
-		await expect(model.review(MODEL, INPUT, CHUNK)).rejects.toMatchObject({
-			issue: "context_response_invalid",
-		});
-	});
+		{
+			recorded: conclusion(HEAD, "candidate"),
+			findings: [],
+			failure: { code: "candidate_missing_finding", hypothesisIndex: 0 },
+		},
+		{
+			recorded: {
+				...conclusion(HEAD),
+				hypotheses: [
+					...conclusion(HEAD).hypotheses,
+					...conclusion(HEAD, "candidate").hypotheses,
+				],
+			},
+			findings: [],
+			failure: { code: "candidate_missing_finding", hypothesisIndex: 1 },
+		},
+		{
+			recorded: conclusion(HEAD),
+			findings: [FINDING],
+			failure: { code: "finding_missing_candidate", findingIndex: 0 },
+		},
+		{
+			recorded: conclusion(HEAD, "candidate"),
+			findings: [{ ...FINDING, line: 1 }],
+			failure: { code: "finding_location_invalid", findingIndex: 0 },
+		},
+	])(
+		"rejects an invalid finding association with $failure.code",
+		async ({ recorded, findings, failure }) => {
+			const { model } = harness([output(recorded, findings), output(recorded, findings)]);
+			await expect(model.review(MODEL, INPUT, CHUNK)).rejects.toMatchObject({
+				issue: "context_response_invalid",
+				failure,
+			});
+		},
+	);
 
 	it.each(["merge-base", INPUT.baseSha])(
 		"uses the before catalog revision, not the branch tip (%s)",
@@ -224,6 +252,9 @@ describe("review evidence provenance through Google transport", () => {
 					range: { kind: "lines", startLine: 1, lineCount: 3 },
 				}),
 				output(conclusion({ ...HEAD, role: "before", revision })),
+				...(revision === "merge-base"
+					? []
+					: [output(conclusion({ ...HEAD, role: "before", revision }))]),
 			]);
 			const result = model.review(MODEL, WITHOUT_INLINE, CHUNK, execution(catalog()));
 			expect(await outcome(result)).toBe(
@@ -235,6 +266,7 @@ describe("review evidence provenance through Google transport", () => {
 	it("does not turn manifest references into evidence of a read", async () => {
 		const { model } = harness([
 			call("source_list", { role: "head", prefix: "", cursor: null, limit: 10 }),
+			output(conclusion(HEAD)),
 			output(conclusion(HEAD)),
 		]);
 		await expect(
@@ -257,6 +289,7 @@ describe("review evidence provenance through Google transport", () => {
 				first,
 				...(continued ? [second] : []),
 				output(conclusion({ ...HEAD, endLine: 1 })),
+				...(continued ? [] : [output(conclusion({ ...HEAD, endLine: 1 }))]),
 			]);
 			const result = model.review(
 				MODEL,
@@ -270,7 +303,24 @@ describe("review evidence provenance through Google transport", () => {
 
 	it("keeps retrieval enabled after an ungrounded complete checkpoint", async () => {
 		const invalid = conclusion({ ...HEAD, path: "src/invented.ts" });
+		const incomplete: ReviewConclusion = {
+			status: "incomplete",
+			reviewedPaths: [PATH],
+			hypotheses: [
+				{
+					...conclusion(HEAD).hypotheses[0]!,
+					outcome: "unresolved",
+					evidence: [],
+					missingEvidence: ["Need exact source"],
+				},
+			],
+			gaps: ["Need exact source"],
+		};
 		const { model, requests } = harness([
+			call("investigation_checkpoint", {
+				conclusion: incomplete,
+				nextTools: ["source_search"],
+			}),
 			call("investigation_checkpoint", { conclusion: invalid, nextTools: [] }),
 			call("source_read", {
 				source: { role: "head", path: PATH },
@@ -281,7 +331,9 @@ describe("review evidence provenance through Google transport", () => {
 		await expect(
 			model.review(MODEL, WITHOUT_INLINE, CHUNK, execution(catalog())),
 		).resolves.toMatchObject({ investigation: { kind: "verified" } });
-		expect(requests[1]).toContain('"name":"source_read"');
+		expect(requests[2]).toContain('"name":"source_read"');
+		expect(requests[2]).toContain("correction_required");
+		expect(requests[2]).toContain("evidence_not_delivered");
 	});
 
 	it("does not combine a financial path with a return added in another file", async () => {

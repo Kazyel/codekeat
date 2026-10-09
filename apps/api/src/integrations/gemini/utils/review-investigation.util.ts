@@ -3,7 +3,8 @@ import { z } from "zod";
 import parseDiff from "parse-diff";
 import {
 	reviewConclusionSchema,
-	ReviewModelResponseError,
+	ReviewConclusionValidationError,
+	type ReviewConclusionValidationFailure,
 	type ReviewConclusion,
 	type ReviewInput,
 	type ReviewInputChunk,
@@ -24,6 +25,18 @@ const nextTool = z.enum([
 	"source_list",
 	"ecosystem",
 ]);
+type CheckpointResult =
+	| {
+			readonly status: ReviewConclusion["status"];
+			readonly pendingTools: readonly z.infer<typeof nextTool>[];
+	  }
+	| {
+			readonly status: "correction_required";
+			readonly failure: Exclude<
+				ReviewConclusionValidationFailure,
+				{ readonly code: "evidence_receipt_invalid" }
+			>;
+	  };
 
 /** The model records externally checkable scenarios; the host owns the loop policy. */
 export class ReviewInvestigationState {
@@ -40,14 +53,32 @@ export class ReviewInvestigationState {
 				inputSchema: z
 					.object({ conclusion: reviewConclusionSchema, nextTools: z.array(nextTool) })
 					.strict(),
-				execute: async ({ conclusion, nextTools }) => {
-					this.validateCheckpoint(conclusion);
-					this.current = conclusion;
-					this.requestedTools = nextTools;
-					return { status: conclusion.status, pendingTools: nextTools };
-				},
+				execute: async ({ conclusion, nextTools }) =>
+					this.checkpoint(conclusion, nextTools),
 			}),
 		};
+	}
+
+	reopen(): void {
+		this.current = null;
+		this.requestedTools = [];
+	}
+
+	private checkpoint(
+		conclusion: ReviewConclusion,
+		nextTools: readonly z.infer<typeof nextTool>[],
+	): CheckpointResult {
+		try {
+			this.validateCheckpoint(conclusion);
+		} catch (error) {
+			if (!(error instanceof ReviewConclusionValidationError)) throw error;
+			if (error.failure.code === "evidence_receipt_invalid") throw error;
+			this.reopen();
+			return { status: "correction_required", failure: error.failure };
+		}
+		this.current = conclusion;
+		this.requestedTools = nextTools;
+		return { status: conclusion.status, pendingTools: nextTools };
 	}
 
 	activeTools(available: readonly string[]): readonly string[] {
@@ -76,15 +107,53 @@ export function validateReviewConclusion(
 	revisions: readonly ReviewSourceRevision[],
 ): void {
 	validateReviewCheckpoint(conclusion, input, chunk, exchanges, revisions);
-	const candidates = conclusion.hypotheses.filter((entry) => entry.outcome === "candidate");
-	const missingFinding = candidates.some(
-		(candidate) => !findings.some((finding) => sameLocation(candidate, finding)),
-	);
-	const missingCandidate = findings.some(
-		(finding) => !candidates.some((candidate) => sameLocation(candidate, finding)),
-	);
-	if (missingFinding || missingCandidate)
-		throw new ReviewModelResponseError("context_response_invalid");
+	validateFindingLocations(findings, chunk);
+	validateCandidateFindings(conclusion, findings);
+	validateFindingHypotheses(conclusion, findings);
+}
+
+function validateFindingLocations(
+	findings: readonly ReviewFinding[],
+	chunk: ReviewInputChunk,
+): void {
+	for (const [findingIndex, finding] of findings.entries()) {
+		if (!(chunk.changedLines.get(finding.path)?.has(finding.line) ?? false))
+			throw new ReviewConclusionValidationError({
+				code: "finding_location_invalid",
+				findingIndex,
+			});
+	}
+}
+
+function validateCandidateFindings(
+	conclusion: ReviewConclusion,
+	findings: readonly ReviewFinding[],
+): void {
+	for (const [hypothesisIndex, hypothesis] of conclusion.hypotheses.entries()) {
+		if (hypothesis.outcome !== "candidate") continue;
+		if (!findings.some((finding) => sameLocation(hypothesis, finding)))
+			throw new ReviewConclusionValidationError({
+				code: "candidate_missing_finding",
+				hypothesisIndex,
+			});
+	}
+}
+
+function validateFindingHypotheses(
+	conclusion: ReviewConclusion,
+	findings: readonly ReviewFinding[],
+): void {
+	for (const [findingIndex, finding] of findings.entries()) {
+		if (
+			!conclusion.hypotheses.some(
+				(entry) => entry.outcome === "candidate" && sameLocation(entry, finding),
+			)
+		)
+			throw new ReviewConclusionValidationError({
+				code: "finding_missing_candidate",
+				findingIndex,
+			});
+	}
 }
 
 function sameLocation(
@@ -104,10 +173,18 @@ export function validateReviewCheckpoint(
 	validateReviewEvidenceProvenance(conclusion, input, exchanges, revisions);
 	if (conclusion.status !== "complete") return;
 	const covered = new Set(conclusion.reviewedPaths);
-	const missing = [...chunk.changedLines.keys()].some(
-		(path) => !covered.has(path) || !conclusion.hypotheses.some((entry) => entry.path === path),
-	);
-	if (missing) throw new ReviewModelResponseError("context_response_invalid");
+	for (const [changedPathIndex, path] of [...chunk.changedLines.keys()].entries()) {
+		if (!covered.has(path))
+			throw new ReviewConclusionValidationError({
+				code: "reviewed_path_missing",
+				changedPathIndex,
+			});
+		if (!conclusion.hypotheses.some((entry) => entry.path === path))
+			throw new ReviewConclusionValidationError({
+				code: "hypothesis_missing",
+				changedPathIndex,
+			});
+	}
 }
 
 const discoveryRisks = [

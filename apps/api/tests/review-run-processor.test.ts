@@ -16,6 +16,7 @@ import {
 	type ReviewInputSource,
 	type ReviewModel,
 	ReviewModelResponseError,
+	ReviewConclusionValidationError,
 	ReviewContextCapacityExceeded,
 	type ReviewModelResult,
 	ReviewRunProcessorService,
@@ -364,7 +365,7 @@ describe("ReviewRunProcessorService", () => {
 			judgeCallCount: 1,
 			reviewChunkCount: 2,
 			changedLineCount: 1,
-			reviewStrategyVersion: "evidence-investigation-v7",
+			reviewStrategyVersion: "evidence-investigation-v8",
 		});
 		database.close();
 	});
@@ -428,7 +429,7 @@ describe("ReviewRunProcessorService", () => {
 		expect(readRun(database)).toMatchObject({
 			status: "completed",
 			judgeCallCount: 1,
-			reviewStrategyVersion: "evidence-investigation-v7",
+			reviewStrategyVersion: "evidence-investigation-v8",
 		});
 		database.close();
 	});
@@ -797,14 +798,23 @@ describe("ReviewRunProcessorService", () => {
 		database.close();
 	});
 
-	it("maps an invalid reviewer response to a sanitized error", async () => {
+	it("maps conclusion validation failure to safe diagnostics without exposing private evidence", async () => {
 		const database = createReviewRun();
 		const logger = pino({ enabled: false });
 		const info = vi.spyOn(logger, "info");
+		const warn = vi.spyOn(logger, "warn");
+		const model = new FailingModel();
+		vi.spyOn(model, "review").mockRejectedValue(
+			new ReviewConclusionValidationError({
+				code: "evidence_not_delivered",
+				hypothesisIndex: 1,
+				evidenceIndex: 2,
+			}),
+		);
 		const processor = createProcessor(
 			database,
 			new ReadyInputSource(ONE_CHUNK_INPUT),
-			new FailingModel(),
+			model,
 			new RecordedJudge(),
 			logger,
 		);
@@ -815,6 +825,20 @@ describe("ReviewRunProcessorService", () => {
 			status: "failed",
 			errorCode: "gemini_invalid_response",
 		});
+		expect(warn).toHaveBeenCalledWith(
+			{
+				chunkIndex: 1,
+				modelName: "gemini-3.8-flash",
+				reviewRunId: REVIEW_RUN_ID,
+				reason: "context_response_invalid",
+				validationFailure: {
+					code: "evidence_not_delivered",
+					hypothesisIndex: 1,
+					evidenceIndex: 2,
+				},
+			},
+			"gemini_review.invalid_response",
+		);
 		expect(info.mock.calls.filter((call) => call[1] === "review_run.stage_finished")).toEqual([
 			[
 				{

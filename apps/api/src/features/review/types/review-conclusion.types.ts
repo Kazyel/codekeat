@@ -74,4 +74,4 @@ export const reviewConclusionSchema = z
 export type ReviewConclusion = z.infer<typeof reviewConclusionSchema>;
 export type ReviewHypothesis = ReviewConclusion["hypotheses"][number];
 
-export const REVIEW_STRATEGY_VERSION = "evidence-investigation-v7";
+export const REVIEW_STRATEGY_VERSION = "evidence-investigation-v8";

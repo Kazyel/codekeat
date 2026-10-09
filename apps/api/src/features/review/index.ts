@@ -7,6 +7,8 @@ export {
 	ReviewContextCapacityExceeded,
 	ReviewSourceCoverageIncomplete,
 	ReviewModelResponseError,
+	ReviewConclusionValidationError,
+	type ReviewConclusionValidationFailure,
 	type ReviewModelResponseIssue,
 } from "./errors/review-model.error.js";
 export { ReviewQueryRepository } from "./repositories/review-query.repository.js";

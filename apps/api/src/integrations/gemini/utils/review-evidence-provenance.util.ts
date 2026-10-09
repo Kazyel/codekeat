@@ -1,6 +1,6 @@
 import { z } from "zod";
 import {
-	ReviewModelResponseError,
+	ReviewConclusionValidationError,
 	type ReviewConclusion,
 	type ReviewContextExchange,
 	type ReviewInput,
@@ -53,31 +53,40 @@ export function validateReviewEvidenceProvenance(
 ): void {
 	const pages = exchanges.flatMap(exchangePages);
 	const reads = pages.flatMap(pageLines);
-	for (const evidence of conclusion.hypotheses.flatMap((entry) => entry.evidence)) {
-		validateSnapshot(evidence, input, revisions);
-		if (inlineEvidence(evidence, input)) continue;
-		if (!observedEvidence(evidence, reads))
-			throw new ReviewModelResponseError("context_response_invalid");
+	for (const [hypothesisIndex, hypothesis] of conclusion.hypotheses.entries()) {
+		for (const [evidenceIndex, evidence] of hypothesis.evidence.entries()) {
+			validateCitation(evidence, { hypothesisIndex, evidenceIndex }, input, revisions, reads);
+		}
 	}
 }
 
 type Evidence = ReviewConclusion["hypotheses"][number]["evidence"][number];
-function validateSnapshot(
+function validateCitation(
+	evidence: Evidence,
+	indices: { readonly hypothesisIndex: number; readonly evidenceIndex: number },
+	input: ReviewInput,
+	revisions: readonly ReviewSourceRevision[],
+	reads: readonly ReadLine[],
+): void {
+	if (!matchesSnapshot(evidence, input, revisions))
+		throw new ReviewConclusionValidationError({
+			code: "evidence_revision_mismatch",
+			...indices,
+		});
+	if (inlineEvidence(evidence, input)) return;
+	if (!observedEvidence(evidence, reads))
+		throw new ReviewConclusionValidationError({ code: "evidence_not_delivered", ...indices });
+}
+
+function matchesSnapshot(
 	evidence: Evidence,
 	input: ReviewInput,
 	revisions: readonly ReviewSourceRevision[],
-): void {
-	if (evidence.role === "head") return requireRevision(evidence.revision, input.headSha);
+): boolean {
+	if (evidence.role === "head") return evidence.revision === input.headSha;
 	if (evidence.role === "before")
-		requireRevision(
-			evidence.revision,
-			revisions.find((entry) => entry.role === "before")?.revision,
-		);
-}
-
-function requireRevision(actual: string, expected: string | undefined): void {
-	if (expected === undefined || actual !== expected)
-		throw new ReviewModelResponseError("context_response_invalid");
+		return evidence.revision === revisions.find((entry) => entry.role === "before")?.revision;
+	return true;
 }
 
 function inlineEvidence(evidence: Evidence, input: ReviewInput): boolean {
@@ -96,12 +105,12 @@ function exchangePages(exchange: ReviewContextExchange): readonly z.infer<typeof
 	try {
 		const response: unknown = JSON.parse(exchange.responseJson);
 		if (exchange.tool === "source_read") {
-			const page = loaded.safeParse(response);
-			return page.success ? [page.data] : [];
+			const page = read.parse(response);
+			return page.kind === "loaded" ? [page] : [];
 		}
 		return packetPages(evidencePacket.parse(response));
 	} catch {
-		throw new ReviewModelResponseError("context_response_invalid");
+		throw new ReviewConclusionValidationError({ code: "evidence_receipt_invalid" });
 	}
 }
 

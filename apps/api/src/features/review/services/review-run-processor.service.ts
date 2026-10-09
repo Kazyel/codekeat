@@ -8,6 +8,7 @@ import {
 	ReviewContextCapacityExceeded,
 	ReviewSourceCoverageIncomplete,
 	ReviewModelResponseError,
+	ReviewConclusionValidationError,
 } from "../errors/review-model.error.js";
 import type { ReviewRunRepository } from "../repositories/review-run.repository.js";
 import type {
@@ -505,7 +506,14 @@ export class ReviewRunProcessorService {
 				errorCode: requestFailureCode(stage),
 			});
 		}
-		this.logger.warn({ ...fields, reason: error.issue }, `gemini_${stage}.invalid_response`);
+		const diagnostic =
+			error instanceof ReviewConclusionValidationError
+				? { validationFailure: error.failure }
+				: {};
+		this.logger.warn(
+			{ ...fields, reason: error.issue, ...diagnostic },
+			`gemini_${stage}.invalid_response`,
+		);
 		return new ReviewProcessingFailure({
 			errorCode: responseFailureCode(stage),
 		});
