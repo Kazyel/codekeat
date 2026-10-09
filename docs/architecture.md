@@ -67,25 +67,26 @@ continuam em `camelCase`; `const` por si só não transforma uma variável local
 4. A fila local agenda até `REVIEW_CONCURRENCY` runs ao mesmo tempo, sem atrasar a resposta HTTP.
    O padrão é cinco runs concorrentes dentro de uma única réplica da API.
 5. O processador reivindica somente runs `queued`, muda-os para `running` e obtém o PR atual como a Installation.
-6. Se o SHA mudou, o run fica `ignored` com `superseded_head_sha`; caso contrário, o diff completo é
-   dividido em Review Chunks de até 100.000 caracteres. O serviço GitHub carrega os documentos `.codekeat/`
-   e os arquivos alterados no repositório de origem do head, usando seu SHA exato.
-7. O serviço Gemini recebe título, descrição, SHAs, contexto do repositório e chunks sequenciais.
-   O prompt pede investigação dos fluxos antes de formular Findings. Consultas adicionais pela integração
-   Takeat MCP filtrada são registradas por tentativa de geração, sem estado compartilhado entre reviews.
-8. A API valida e deduplica os candidatos. O juiz recebe as evidências por hunk, o contexto do PR e as
-   consultas MCP associadas, sem executar ferramentas próprias. A API persiste todos os candidatos com
-   seus julgamentos e um Review Report pendente na transição atômica para `completed`.
-9. Uma fila separada publica os relatórios um por vez, sem esperar pelas análises em andamento.
-   A fila atualiza um comentário consultivo único do Codekeat no PR; sem Findings, publica a confirmação
-   de que não encontrou problemas concretos.
-10. Falhas controladas deixam o run como `failed`, sem persistência parcial de Findings, e falhas de
-    publicação ficam no Review Report para nova tentativa em evento futuro.
+6. Se o SHA mudou, o run fica `ignored`; caso contrário, o serviço captura o diff completo e cria um
+   catálogo de fontes no head e no merge-base congelados. Arquivos inteiros selecionados conforme a
+   capacidade do modelo acompanham o contexto inicial; as demais fontes continuam consultáveis.
+7. O planejador agrupa diffs relacionados e cria unidades persistidas. Gerador e juiz executam com
+   paralelismo limitado e ferramentas nativas de investigação. A integração Takeat MCP complementa
+   essas fontes nas instalações autorizadas.
+8. O preflight conta o request real. Uma unidade que exceda a capacidade é subdividida, preservando
+   sua cobertura. Resultados validados e recibos de uso são gravados antes de avançar.
+9. A API valida cobertura, deduplica candidatos e julga lotes completos. Só depois de todas as unidades
+   concluírem persiste Findings e um Review Report pendente na transição atômica para `completed`.
+10. Uma fila separada publica relatórios consultivos, um por vez. O marcador do relatório permite
+    reconhecer uma publicação já aceita pelo GitHub antes de uma interrupção local.
+11. Falhas controladas conservam checkpoints e consumo. Uma fatia de trinta minutos devolve o run à
+    fila. A inicialização recupera runs e publicações interrompidos.
 
 O handler do webhook não executa análise longa no caminho da resposta HTTP. `p-queue` controla a
-concorrência local; ele não é um broker durável. Enquanto SQLite for usado, uma única réplica da API
-processa Reviews. Nesta fase, o bootstrap não recupera nem reenfileira runs `queued` que já existiam
-antes de um reinício.
+concorrência local; o armazenamento de planos e unidades em SQLite fornece a retomada. Enquanto SQLite
+for usado, uma única réplica da API processa Reviews e recupera claims. Limites de chamadas e tokens
+por minuto pertencem ao guard Google compartilhado, com retries de geração sob responsabilidade do
+AI SDK. Consulte [Contexto de revisão](review-context.md) para os contratos e limites operacionais.
 
 ## Extensibilidade necessária agora
 
@@ -125,26 +126,29 @@ O carregamento inicial prioriza `README.md`, `domain.md` e `integrations.md`, se
 alterações no diff. Todos são consultados no SHA e no repositório de origem do head, inclusive
 quando o PR vem de um fork. O carregamento não troca uma revisão ausente pela branch padrão.
 
-O carregador descobre documentos adicionais de `.codekeat/`, lê todos os arquivos alterados e confirma
-imports locais diretos e testes relacionados. Fontes completas pertinentes entram no prompt; as demais
-aparecem no manifesto. Ausência e indisponibilidade são estados explícitos. Não há truncamento por
+O carregador descobre documentos adicionais de `.codekeat/`, seleciona arquivos completos conforme
+a capacidade inicial e confirma imports locais diretos e testes relacionados. As fontes restantes
+ficam acessíveis no catálogo. Ausência e indisponibilidade são estados explícitos. Não há truncamento por
 caracteres, e regras do agente ficam separadas dos dados externos.
 
 O request serializado do AI SDK passa por contagem de tokens e comparação com a capacidade real do
 modelo, incluindo ferramentas e histórico. O judge divide lotes grandes em candidatos completos;
-contexto indivisível que não cabe falha explicitamente. Cada geração tem prazo de cinco minutos e o
-run tem prazo de trinta minutos. Consumo conhecido sobrevive a falhas, fallbacks e retries. As regras
+contexto indivisível que não cabe falha explicitamente. Cada chamada HTTP admitida do modelo tem prazo
+de cinco minutos. O run usa fatias retomáveis de trinta minutos. Consumo conhecido sobrevive a falhas,
+fallbacks e retries. As regras
 de seleção e proveniência estão em [Contexto de revisão](review-context.md).
 
 ## Estado persistido mínimo
 
 SQLite guarda somente o estado pertencente ao Codekeat: instalação, repositório conectado, Review Run,
-Finding e snapshot da Repository Policy usada na execução. GitHub continua sendo a fonte de verdade para
+Finding, snapshot da Repository Policy, unidades, recibos de uso e métricas operacionais. GitHub continua sendo a fonte de verdade para
 pull requests, commits e usuários.
 
 Um Review Run registra o repositório, número do PR, SHA analisado, status, timestamps, modelo, policy
 aplicada e erro estruturado quando houver falha. Finding registra a severidade, caminho, linha adicionada,
-título e justificativa; diffs, prompts, documentos de contexto e consultas MCP não são persistidos. Review Report mantém o
+título e justificativa. Planos e unidades conservam payloads e resultados privados para retomada.
+Artefatos completos de fontes e investigação ficam ao lado do banco no volume persistente. A
+telemetria armazena metadados sem conteúdo privado. Review Report mantém o
 comentário consultivo de cada execução, preservando o histórico entre SHAs do PR.
 
 Um Webhook Delivery registra cada evento recebido e impede processamento simultâneo ou repetição de

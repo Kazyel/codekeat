@@ -21,7 +21,7 @@ O contexto tipado de um Review Run usado pelo Review Model: repositório, PR, SH
 _Avoid_: Payload, prompt
 
 **Review Chunk**:
-Um trecho do diff de um Review Input, de no máximo 100.000 caracteres, com o mapeamento de suas linhas adicionadas. Os trechos são analisados em sequência.
+Um trecho do diff de um Review Input com o mapeamento de suas linhas adicionadas. O planejamento agrupa ou subdivide trechos conforme a capacidade do modelo, sem cortes por caracteres. Unidades persistidas permitem execução concorrente e retomada.
 _Avoid_: Batch, page
 
 **Review Model**:

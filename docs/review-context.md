@@ -1,151 +1,121 @@
 # Contexto de revisão
 
-O Codekeat combina a intenção do PR, o diff e o contexto do repositório para avaliar os candidatos.
-O diff delimita as linhas reportáveis. Documentos, código completo e consultas MCP permitem investigar
-o fluxo afetado e refutar suspeitas antes da publicação.
+A estratégia `repository-context-v6` combina intenção do PR, diff completo, fontes do repositório e
+investigação pelo modelo. As linhas adicionadas delimitam onde um finding pode ser publicado. Código,
+descrição, documentação e respostas externas são dados não confiáveis; não alteram as instruções nem
+as permissões do agente.
 
-## Arquivos do repositório
+## Fontes e proveniência
 
-`.codekeat.yml` permanece na raiz e define a Repository Policy. A API lê essa configuração na branch
-padrão. O diretório `.codekeat/` contém conhecimento sobre o projeto, lido na revisão analisada.
+`.codekeat.yml` continua definindo a política na branch padrão. `.codekeat/` contém conhecimento da
+revisão analisada. Use README.md para organização e fluxos, domain.md para invariantes e exceções, e
+integrations.md para produtores, consumidores e contratos. Inclua referências verificáveis ao código.
 
-O carregamento inicial prioriza estes documentos, nesta ordem:
+O catálogo nativo existe para todas as instalações autorizadas. Gerador e juiz dispõem de listagem,
+leitura, busca e descoberta de arquivos relacionados. As fontes distinguem `head`, `before`,
+`pull_request` e `investigation`. `before` corresponde ao merge-base congelado, e não ao estado atual
+da branch de destino. PRs de forks conservam a origem do head. Falhas nunca consultam a branch padrão
+como alternativa. Symlinks e submódulos aparecem explicitamente como fontes não suportadas.
 
-- `.codekeat/README.md`: responsabilidade do repositório, organização, fluxos principais e índice de referências.
-- `.codekeat/domain.md`: vocabulário, invariantes e exceções de negócio com referências verificáveis.
-- `.codekeat/integrations.md`: produtores, consumidores, contratos e responsabilidade de cada sistema relacionado.
+A árvore GitHub usa SHA; uma árvore recursiva truncada exige percorrer as árvores não recursivas.
+Leituras de blobs usam identidade e revisão congeladas. Páginas conservam hash, origem, posição e
+continuação. Linhas muito longas podem ser consultadas por colunas UTF16 com fim exclusivo. O conteúdo
+não é cortado silenciosamente, e uma busca paginada não apresenta seu resultado parcial como completo.
 
-O carregador descobre também arquivos e subdiretórios de `.codekeat/`, validando as entradas retornadas
-pelo GitHub. Ele lê o conteúdo textual completo e ignora links simbólicos, submódulos e caminhos que
-escapem do diretório solicitado. Diretórios já consultados não são visitados novamente. Leituras independentes usam até quatro
-requests simultâneos por carregamento e até dezesseis no processo. Arquivos e diretórios consultados
-concorrentemente compartilham o mesmo lookup daquela execução. A ordem das fontes independe da ordem
-das respostas, e cancelamento interrompe o I/O ativo e as leituras ainda enfileiradas.
+O carregamento inicial seleciona arquivos inteiros conforme um orçamento estimado derivado da
+capacidade do modelo. Fontes disponíveis apenas no catálogo têm estado próprio, sem serem marcadas
+como ausentes. A seleção permite manter documentos e arquivos pertinentes no prompt de PRs pequenos,
+sem baixar todo o repositório antes da análise. O preflight do Google conta o request serializado
+completo e é a autoridade final sobre a capacidade.
 
-Os documentos são opcionais. O carregamento registra arquivos ausentes e não substitui seu conteúdo
-por documentos de outra revisão. Referências em documentação não concedem acesso a outros repositórios.
+Descrição e diffs completos permanecem acessíveis no catálogo. Tentativas usam prompt inline,
+prompt com contexto sob demanda e, quando necessário, referências ao pacote integral. O modo de
+referências exige leitura completa do artefato do pacote antes de aceitar a resposta. Uma ferramenta
+ter sido chamada não basta para comprovar essa leitura.
 
-## Revisões e limites
+## Investigação e julgamento
 
-O contexto identifica o repositório de origem do head, o SHA do head e o SHA da base. Documentos e
-arquivos alterados são carregados pelo GitHub no SHA do head. Em PRs de forks, a origem
-é o repositório do fork. Uma leitura malsucedida não consulta a branch padrão como alternativa.
+Para a Takeat, as ferramentas MCP complementam o catálogo nativo com código e histórico técnico do
+ecossistema. O agente deve consultar somente fontes relacionadas à mudança e permitidas pela
+instalação ou pelo MCP. Código sem SHA confirmado serve como evidência histórica, não como prova do
+head. Respostas MCP completas viram artefatos consultáveis; o prompt recebe referências em vez de
+repetir grandes payloads em cada chamada.
 
-Documentos, código e respostas MCP não têm cortes por quantidade de caracteres. Todos os caminhos
-alterados são carregados uma vez, inclusive arquivos com apenas remoções. Arquivos removidos aparecem
-como ausentes no head, e seu diff conserva as linhas anteriores. Quando o GitHub retorna `encoding:
-none` para um arquivo grande, uma segunda leitura usa mídia raw no mesmo repositório e SHA. O conteúdo
-precisa corresponder ao tamanho declarado e ser texto válido.
+O juiz pode investigar novamente. Ele recebe candidatos, hunks e registros da investigação original,
+com as mesmas fontes congeladas. Os lotes contêm até 50 candidatos, sem cortar uma evidência por
+caracteres. Lotes que excedem a capacidade são subdivididos entre candidatos inteiros.
 
-O carregador acrescenta imports relativos diretos e testes relacionados cuja existência é confirmada
-na listagem do diretório. Ele não percorre indefinidamente o grafo de dependências nem consulta caminhos
-fora do repositório. Consultas adicionais usam o manifesto de fontes e as ferramentas de investigação.
+Tentativas com catálogo permitem até doze rodadas de ferramentas; o caminho legado de MCP permite
+seis. Esses limites e os prazos continuam finitos. Evidência não lida ou unidade indivisível que não
+caiba produz falha explícita, preservando checkpoints. Não há garantia de qualidade independente do
+volume ou da indisponibilidade das fontes. A avaliação de falsos positivos ainda depende de exemplos
+classificados por humanos.
 
-Uma resposta HTTP 404 registra `missing`. Outros erros de leitura registram `unavailable`. Esses estados
-impedem que uma ausência de evidência seja apresentada como confirmação de comportamento.
+## Planejamento, cobertura e retomada
 
-Cada trecho de análise conserva o bloco bruto de um arquivo, incluindo metadados Git, cabeçalhos,
-hunks e linhas inteiros. Caminhos com escapes Git são decodificados para leituras no GitHub e
-localizações de findings. Escapes inválidos ou blocos que não correspondam a um arquivo encerram o
-carregamento com erro. A construção acumula as linhas adicionadas em um conjunto local, sem copiar
-o conjunto a cada adição. O juiz extrai o hunk completo da mesma representação, preservando as linhas
-mesmo quando o arquivo ou hunk é grande.
+O planejador agrupa diffs pequenos de arquivos próximos. A estimativa decide como empacotar; o
+preflight considera instruções, ferramentas, histórico e schema reais. Uma falha de capacidade ou
+leitura incompleta permite subdividir grupos, arquivos, hunks e janelas de linhas. Os cabeçalhos das
+janelas preservam as coordenadas originais. Adições, remoções e contexto continuam disponíveis.
 
-Cada prompt recebe a descrição completa do PR, os documentos do projeto e o código pertinente ao
-arquivo ou aos candidatos analisados. As demais fontes aparecem num manifesto com path, estado,
-repositório e revisão. Isso permite recuperar contexto relevante sem repetir todos os arquivos em
-todas as chamadas. As regras de revisão ficam no system prompt; os textos externos ficam nos dados.
-O pacote inclui relações de imports e testes entre as fontes já carregadas nos dois sentidos. Assim,
-um chamador disponível acompanha a função alterada, independentemente da ordem dos arquivos. Uma
-fila com caminhos visitados identifica os componentes desse grafo uma vez por snapshot, em tempo
-linear. Gerador e juiz reutilizam o índice e o manifesto, sem novas leituras remotas.
+Planos e unidades ficam em SQLite. O fingerprint inclui base, head, repositório, título, descrição,
+diffs, contexto inicial, modelo e versão da estratégia. Uma mudança nessa identidade invalida as
+unidades anteriores. Consumo pago continua preservado. Pais subdivididos deixam de contar como
+unidades executáveis; seus filhos passam a representar o trabalho restante.
 
-A janela do modelo continua finita. A integração consulta os limites reais do modelo e conta os tokens
-do request serializado, incluindo instruções, ferramentas e histórico. Capacidade insuficiente é uma
-falha explícita; ela não autoriza cortar uma fonte ou apresentar uma análise parcial como concluída.
-Contagens de requests idênticos compartilham um cache Effect por guard autenticado, com até 256
-entradas e TTL de dez minutos. A chave é o hash do request completo e do modelo. O cache conserva
-somente hash e contagem; falhas expiram imediatamente. A capacidade do modelo continua sendo
-verificada em cada chamada, e gerações e consumo faturado não entram nesse cache.
+Cada unidade registra seu resultado somente depois de validar a resposta. Tentativas seguintes
+reutilizam as unidades concluídas. Antes do julgamento, a API verifica cobertura de arquivos, linhas
+alteradas e conteúdo do diff. O relatório só é criado depois de todas as unidades e todos os
+julgamentos terminarem. Cobertura significa que o trabalho foi processado; não prova que o modelo
+identificou todos os bugs.
 
-## Investigação pelo MCP
+O prazo de cinco minutos cobre cada chamada HTTP do modelo após admissão, incluindo o corpo da
+resposta. Esperas por quota e concorrência continuam sujeitas à fatia do processor. O prazo de trinta minutos passa a ser
+uma fatia de execução: a API libera o run para a fila e retoma checkpoints. Na inicialização, claims
+interrompidos voltam à fila. Relatórios pendentes e publicações interrompidas também são recuperados;
+a publicação usa o marcador GitHub existente para evitar comentários duplicados.
 
-Para instalações da Takeat, o modelo dispõe das ferramentas permitidas de código e histórico técnico.
-O prompt pede investigação antes dos findings, incluindo chamadores, validações, consumidores e
-comparação do comportamento anterior com o novo. A presença das ferramentas não garante que o modelo
-as consulte em toda geração.
+Recibos de uso e agregados do run são gravados na mesma transação, antes de validar a resposta ou
+executar ferramentas. A chave run/etapa/chamada/passo deduplica notificações. Metadata ausente permanece
+desconhecida. Isso reduz perda de contabilização em interrupções, mas um processo morto antes de
+receber a resposta do provider não pode registrar consumo que nunca observou.
 
-O AI SDK executa até seis rodadas de ferramentas e reserva uma sétima geração para a resposta
-estruturada sem ferramentas. Uma rodada pode pedir várias consultas. O registro serializa a execução
-dessas consultas para preservar a ordem das evidências e deduplicar consultas idênticas.
+## Privacidade e armazenamento
 
-Consultas de outros repositórios devem estar relacionadas à mudança e permanecer no escopo autorizado
-da Takeat. Um contrato de API alterado pode justificar consultar seus consumidores. Um documento
-genérico sobre o ecossistema não justifica carregar todos os repositórios.
+Checkpoints privados contêm evidência necessária para retomar o trabalho. Os artefatos completos
+ficam em `review-artifacts/` ao lado do banco, em diretórios 0700 e arquivos 0600. O volume persistente
+precisa acompanhar backups e recuperação do banco. Os artefatos não expiram automaticamente enquanto
+forem necessários à retomada. Planeje armazenamento conforme a retenção das reviews.
 
-Cada tentativa de geração registra as chamadas MCP e suas respostas completas em memória, com
-validação. Gerador e juiz recebem o mesmo conteúdo e os mesmos erros explícitos. Consultas repetidas
-com os mesmos argumentos reutilizam a resposta daquela tentativa e não duplicam evidências.
-Cada tentativa aceita até 16 consultas distintas. Esse limite e as rodadas de geração limitam a duração
-da investigação, sem impor cortes ao conteúdo. O sinal de cancelamento acompanha as chamadas remotas.
-O registro acompanha os candidatos até o juiz. Código obtido sem revisão confirmada serve
-como contexto histórico e não prova o estado do head. Descrição, documentos, código e respostas MCP
-são dados não confiáveis e não podem alterar as permissões ou instruções do agente.
+Código, descrição, argumentos e respostas privadas não aparecem nos logs nem nos endpoints de
+telemetria. O dashboard recebe metadados operacionais, candidatos e julgamentos.
 
-Se o MCP estiver indisponível, a geração é repetida sem ferramentas, preservando o contexto carregado
-pelo GitHub. A indisponibilidade aparece no prompt e acompanha os candidatos até o juiz. O modelo pode
-reportar um defeito demonstrável no código disponível, mas deve descartar suspeitas que dependam de
-conteúdo externo inacessível. O fallback não volta à análise isolada do diff.
+## Limites compartilhados e medição
 
-## Contexto do juiz
+`REVIEW_CONCURRENCY` limita PRs simultâneos, com padrão cinco. `REVIEW_UNIT_CONCURRENCY` limita unidades
+por PR, com padrão dois. `REVIEW_MODEL_CONCURRENCY` limita chamadas reais Google compartilhadas por
+gerador e juiz, com padrão cinco. Publicações continuam serializadas. SQLite exige uma única réplica
+API para que a recuperação de claims seja segura.
 
-O juiz recebe título, descrição, SHAs, contexto carregado pelo GitHub, evidências do diff e registros
-MCP associados aos candidatos. Os lotes contêm até 50 candidatos, sem limite de caracteres nem cortes
-nas evidências. Um lote que ultrapasse a capacidade do modelo é dividido entre candidatos inteiros.
-Uma evidência indivisível que exceda essa capacidade encerra a execução com erro explícito.
-O juiz avalia essas evidências sem executar novas ferramentas. As linhas
-adicionadas no diff continuam sendo as únicas localizações permitidas para findings.
+`GOOGLE_REQUESTS_PER_MINUTE` e `GOOGLE_INPUT_TOKENS_PER_MINUTE` são limites locais opcionais. Configure-os
+conforme a quota do projeto; metadata do modelo não informa essa quota. O guard reserva chamadas e
+tokens de entrada para cada request real, incluindo retries e rodadas de ferramentas. Entrada já
+cacheada também entra no orçamento local. Metadata e countTokens ficam fora do orçamento de geração.
+Retry-After em 429 bloqueia novas admissões, com cancelamento. O AI SDK permanece o único dono dos
+retries de geração.
 
-Documentos e registros MCP não são persistidos no banco nem enviados aos logs. O resultado conserva
-os candidatos e seus julgamentos para auditoria. A estratégia `repository-context-v5` identifica as
-execuções com esse contexto. A avaliação de falsos positivos depende de classificação humana, como
-descrito em [Eficiência e inteligência dos reviews](roadmap/review-efficiency-intelligence.md).
+Contagens idênticas compartilham cache de 256 entradas por dez minutos; metadata válida usa TTL de uma
+hora. Os caches conservam hashes e contagens. O catálogo conserva referências a blobs em disco e
+isola o escopo por run. Leituras GitHub mantêm limites de quatro por catálogo e dezesseis no processo.
 
-## Escolha de implementação
+A telemetria registra fila, entrada, preparação, contagem, geração, ferramentas e juiz. Endpoints
+`/api/v1/review-telemetry` e `/api/v1/review-telemetry/:runId` exigem o token do dashboard. Eventos têm
+paginação explícita. Agregados mostram P50/P95 por período, fase, tipo de medição e faixa de tamanho do
+diff. Etapas completas e operações internas têm séries separadas, para evitar somar tempos
+sobrepostos. Memória RSS pertence ao processo compartilhado, e não à alocação exclusiva de um PR.
 
-`GitHubReviewInputService` entrega um `ReviewInput` com `baseSha` e `repositoryContext`. O carregador
-GitHub valida arquivos e diretórios externos, lê fontes completas e mantém o SHA. Uma segunda leitura do PR rejeita mudanças
-de head ou base durante a obtenção do diff, antes de carregar contexto. O conjunto de paths recebido
-precisa corresponder ao número de arquivos informado pelo PR. Diferença ou diff vazio inesperado
-encerra o carregamento com `github_diff_unavailable`. Essa conferência detecta blocos ausentes; ela
-não comprova que o transporte entregou todas as linhas de cada bloco.
-
-`GeminiReviewService.review` cria um registro de ferramentas por tentativa e devolve a investigação
-junto dos findings. O processor associa esse registro às evidências do chunk. O juiz recebe o mesmo
-contexto inicial e os registros correspondentes ao lote. Esse estado não é compartilhado entre PRs. O índice usa uma chave fraca para acompanhar o ciclo de
-vida do snapshot, sem conservar fontes depois que seu dono é liberado.
-
-O AI SDK representa falhas de execução como `tool-error`. O registro conserva a primeira falha
-para interromper novas etapas e acionar o fallback somente quando o MCP estiver indisponível.
-Respostas inválidas e chamadas rejeitadas continuam sendo falhas explícitas. Cada
-`onLanguageModelCallEnd` valida e registra o uso antes da execução das ferramentas. O consumo conhecido
-acumula entre tentativas, fallback, arquivos e lotes do juiz, inclusive quando uma etapa posterior falha.
-A persistência conserva esse consumo parcial; metadata ausente não permite inventar custo zero exato.
-
-Uma etapa de modelo separada para investigação também foi considerada. Ela garantiria uma fase
-distinta antes dos findings, mas acrescentaria chamada, contrato de saída e custo. O pré-carregamento
-GitHub fornece contexto antes da geração sem essa etapa. Chamadas MCP determinísticas foram
-descartadas porque os parâmetros e recursos de revisão pertencem ao catálogo do servidor, não ao
-Codekeat. A investigação adicional permanece uma decisão do modelo.
-
-## Medição e evolução de escala
-
-O processor registra duração e resultado de carregamento, geração de candidatos e julgamento em
-`review_run.stage_finished`, inclusive quando uma etapa falha ou é interrompida. Os logs contêm ID,
-etapa, duração e resultado, sem código, descrição ou respostas privadas. São eventos de diagnóstico;
-o dashboard ainda agrega a duração total do run.
-
-A [pesquisa de escala](roadmap/review-context-scale-research.md) compara execução com cobertura
-persistida e recuperação de fontes sob demanda. A rodada atual remove trabalho repetido sem mudar
-a seleção do contexto. Catálogo completo, segmentação de fontes, cobertura persistida e retomada
-continuam necessários para processar volumes que excedam a memória, a janela ou o prazo atual.
+Métricas de velocidade e custo não substituem avaliação de precisão. A configuração inicial mantém
+um modelo único, paralelismo moderado e deduplicação. Trocas de modelo e aumentos de concorrência
+precisam considerar as amostras reais e a qualidade dos achados. Veja a
+[pesquisa de escala](roadmap/review-context-scale-research.md) e o
+[plano de avaliação](roadmap/review-efficiency-intelligence.md).

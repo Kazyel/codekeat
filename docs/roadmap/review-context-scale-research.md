@@ -1,7 +1,7 @@
 # Escala do contexto de reviews
 
-Pesquisa de 8 de outubro de 2026. A seção de decisão distingue a rodada implementada das propostas
-que ainda exigem mudança de contrato e avaliação.
+Pesquisa iniciada em 8 de outubro de 2026, com implementação de catálogo e unidades em 9 de outubro.
+As seções de decisão registram a evolução entre as rodadas e os limites ainda presentes.
 A referência local usa Effect 4.0.2, AI SDK 7.0.135 e `@ai-sdk/google` 4.0.93.
 
 ## Fontes completas e chamadas com capacidade finita
@@ -34,7 +34,7 @@ incluem um experimento de produção sobre falsos positivos.
 | Comparação humana entre estratégias de review                                        | Ainda não medida                                                                             | Não há taxa observada de falsos positivos nem ganho comprovado de recall.                              |
 | Tempo total com GitHub, MCP e Gemini em PRs grandes                                  | Ainda não medido                                                                             | O benchmark do parser não representa a latência do run completo.                                       |
 
-O fluxo atual conserva descrição, blocos do diff, fontes carregadas e respostas MCP completas. Conta
+O baseline desta pesquisa conserva descrição, blocos do diff, fontes carregadas e respostas MCP completas. Conta
 tokens do request serializado e falha explicitamente quando uma evidência indivisível ultrapassa o
 modelo. Chunks e juiz continuam sequenciais dentro de cada run. A documentação do
 [contexto atual](../review-context.md) e dos [padrões Effect](../effect.md) descreve essas garantias.
@@ -209,7 +209,7 @@ amostra finita pode revelar regressões e sustentar rollout controlado; não pro
 perda de qualidade em todo PR futuro. Nenhuma meta numérica de latência, economia ou redução de
 falsos positivos nesta proposta foi medida em produção.
 
-## Decisão da rodada
+## Decisão da rodada anterior
 
 Foram comparados dois desenhos. O primeiro distribui todo o diff entre unidades de trabalho com
 cobertura e checkpoints, amortizando chamadas e permitindo retomada. O segundo cria um catálogo de
@@ -243,3 +243,46 @@ inferência, custo confirmado e qualidade humana continua necessário antes de e
 contrato de seleção e distribuição de trabalho.
 
 A verificação integrada desta rodada passou em `pnpm check && pnpm typecheck && pnpm test && pnpm build`: 235 testes da API e 11 da web. Oito suites focadas passaram com 123 testes. Nove regressões falharam no baseline anterior pelas condições esperadas e passaram após restaurar a implementação. Esses checks não usaram inferência paga nem rótulos de qualidade de produção.
+
+## Implementação de catálogo, unidades e limites compartilhados
+
+A evolução seguinte implementa os pontos 2 a 6. O catálogo usa objetos Git no head e no merge-base
+exatos, com persistência privada dos originais e ferramentas paginadas para gerador e juiz. Unidades
+persistidas agrupam diffs relacionados, subdividem trabalho quando a capacidade exige e validam a
+cobertura antes da conclusão. Checkpoints e recibos de uso permitem retomar após interrupções.
+
+A API compartilha a admissão de chamadas reais do modelo entre gerador e juiz. Os padrões são duas
+unidades por review e cinco chamadas do modelo simultâneas no processo. Limites locais opcionais de
+requisições e tokens de entrada por minuto restringem cada modelo. Esses valores não inferem a quota
+contratada do Google. A espera por admissão permanece cancelável pela fatia de execução de trinta
+minutos, que devolve trabalho pendente à fila. Cada chamada HTTP admitida, incluindo seu corpo de
+resposta, tem prazo de cinco minutos.
+
+A telemetria privada registra fases e operações, requisições, tokens conhecidos, cache, capacidade,
+volumes e RSS do processo. As consultas agregam no SQLite e expõem p50/p95 por período e faixa de
+tamanho do diff. RSS compartilhado não representa memória exclusiva de um PR. Durações de fase e
+de operações se sobrepõem e não devem ser somadas.
+
+Um ensaio local do código compilado usou vinte operações com latência simulada de 20 ms, 500 tokens
+por operação e orçamento de vinte chamadas e 10.000 tokens. Todas as configurações completaram as
+mesmas operações e respeitaram o limite de concorrência.
+
+| Concorrência configurada | Pico observado | Tempo total |
+| ------------------------ | -------------- | ----------- |
+| 1                        | 1              | 409,35 ms   |
+| 2                        | 2              | 204,03 ms   |
+| 4                        | 4              | 101,81 ms   |
+| 5                        | 5              | 81,15 ms    |
+
+Esse ensaio mede o controle de admissão com latência sintética. Ele não mede inferência, economia de
+tokens ou qualidade de findings. A avaliação humana nas mesmas revisões e o acompanhamento de
+latência e custo em produção continuam necessários para escolher novos padrões. Fontes integrais
+ficam disponíveis, mas sua disponibilidade não comprova que toda evidência relevante foi consultada.
+Limites das APIs, da janela do modelo e de rodadas de ferramentas continuam explícitos.
+
+A verificação integrada dessa implementação passou em lint, formatação, typechecks, testes e builds:
+272 testes da API e quinze da web. A validação dos ambientes e do Docker Compose também passou.
+A revisão final encontrou ausência de uso/preparação na telemetria e um timeout que incluía a espera
+por quota. Quatro casos falharam pelas condições esperadas antes dos reparos; a execução integrada
+posterior confirmou os comportamentos corrigidos. O teste de fatia expirada também confirma retorno
+à fila, cancelamento de I/O e reutilização das unidades concluídas.

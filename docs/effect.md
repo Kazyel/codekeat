@@ -37,8 +37,9 @@ Componha programas internos antes de executá-los. Use `runPromise` nos limites 
 O processor converte o resultado da análise com `Effect.result` antes de persistir a conclusão.
 Uma falha posterior no enfileiramento do relatório não altera uma review que já foi concluída.
 
-O pipeline usa `Effect.forEach` com `concurrency: 1`. Uma falha interrompe os chunks ou lotes seguintes
-e impede a persistência de findings parciais. A deduplicação, as evidências e o arredondamento final
+O pipeline usa `Effect.forEach` com concorrência configurável para unidades persistidas. Uma falha
+interrompe unidades pendentes e impede a publicação de findings parciais. Checkpoints concluídos
+permanecem disponíveis para retomada. A deduplicação, as evidências e o arredondamento final
 dos custos continuam sendo decisões do domínio.
 
 Referência: [falhas esperadas e composição](https://effect.website/docs/v4/error-management/expected-errors).
@@ -56,8 +57,10 @@ OAuth e cada operação MCP têm prazo de 10 segundos. Encerramento remoto e fec
 têm prazos individuais de 10 segundos. Uma falha de cleanup é registrada sem substituir o resultado
 original nem provocar renovação de credenciais.
 
-Cada tentativa de geração ou julgamento tem prazo total de cinco minutos. O processor limita o run
-inteiro a trinta minutos, incluindo o carregamento de contexto. Os sinais propagam interrupção para
+Cada chamada HTTP admitida do modelo tem prazo de cinco minutos, incluindo a leitura da resposta.
+A espera por concorrência, quota ou Retry-After não consome esse prazo. O processor usa fatias de
+trinta minutos, incluindo o carregamento de contexto, e devolve
+o run à fila com checkpoints para retomar as unidades pendentes. Os sinais propagam interrupção para
 GitHub, Google e ferramentas MCP. Consultas de metadata e contagem de tokens têm prazo de dez segundos;
 metadata válida fica no cache por uma hora. Contagens idênticas usam um cache de 256 entradas
 com TTL de dez minutos e falhas com TTL zero. Um serviço privado fornece o body apenas ao lookup;
@@ -65,7 +68,8 @@ as entradas prontas conservam hash e contagem, sem reter o contexto da requisiç
 de dez segundos e não cancela um inventário compartilhado com outros eventos.
 
 O registro de consumo recebe cada resposta do provider antes de executar ferramentas ou validar a
-saída estruturada. Um ledger por run conserva esse uso quando etapas posteriores falham, inclui tentativas
+saída estruturada. Recibos deduplicados e agregados são persistidos atomicamente antes das ferramentas ou validações.
+Um ledger por run conserva esse uso quando etapas posteriores falham, inclui tentativas
 de fallback e acumula retries autorizados. Custos são arredondados ao persistir; no retry, os tokens e
 o snapshot de preços recuperam a precisão anterior. Ausência de metadata permanece desconhecida,
 sem conversão silenciosa para custo zero.
@@ -97,10 +101,15 @@ já fornece as dependências usadas pelo processor e pelos adaptadores.
 
 Uma futura troca de PQueue por `Queue` precisa incluir um worker em escopo, shutdown da aplicação
 e recuperação dos runs em andamento. PQueue limita os runs simultâneos por `REVIEW_CONCURRENCY`,
-com padrão de cinco, enquanto cada pipeline permanece sequencial. Publicações usam outra fila serial.
-As filas continuam sem recuperação após reinício.
+com padrão de cinco. `REVIEW_UNIT_CONCURRENCY`, com padrão dois, controla `Effect.forEach`
+sobre unidades persistidas. Filhos de uma subdivisão executam sequencialmente dentro do slot do pai.
+O guard Google compartilha um `Semaphore` entre requisições reais do gerador e do juiz e admite
+chamadas e tokens conforme os limites locais configurados. Esperas por quota e Retry-After são
+canceláveis. Publicações usam outra fila serial. A inicialização recupera claims interrompidos e
+relatórios pendentes. Essa recuperação depende da única réplica API.
 Uma porta Promise que recebe cancelamento precisa propagá-lo até a requisição e a leitura do corpo.
-Logs Pino mantêm códigos, IDs e duração. `Effect.onExit` registra duração e resultado de cada
+Logs Pino mantêm códigos, IDs e duração. A tabela privada de telemetria conserva metadados
+operacionais para consultas autenticadas e não contém o conteúdo das fontes. `Effect.onExit` registra duração e resultado de cada
 etapa do processor também em falha ou interrupção, sem registrar as fontes. Spans de tracing precisam de um exporter configurado para
 produzir observabilidade fora do processo.
 
