@@ -1,8 +1,10 @@
+import { posix } from "node:path";
 import { Cache, Effect, Exit } from "effect";
 import { z } from "zod";
 
 import type {
 	ReviewBatchedSourceSearchResult,
+	ReviewLexicalScope,
 	ReviewSourceEvidenceRequest,
 	ReviewSourceEvidenceResult,
 } from "../types/review-evidence.types.js";
@@ -31,6 +33,10 @@ const SEARCH_SCHEMA = z.object({
 });
 const SEARCH_DEADLINE_MS = 10_000;
 const LOOKUPS = new WeakMap<ReviewSourceCatalog, ReviewEvidenceRetrievalService>();
+interface ScopedOccurrences {
+	readonly occurrences: ReviewBatchedSourceSearchResult | null;
+	readonly scope: ReviewLexicalScope | null;
+}
 
 /** The catalog instance is the authorization boundary; no cache crosses catalogs or runs. */
 export function reviewEvidenceRetrieval(
@@ -100,13 +106,13 @@ export class ReviewEvidenceRetrievalService {
 				head,
 				beforeRange,
 				pages.localRelationships,
-				pages.lexicalOccurrences,
+				pages.lexicalOccurrences.occurrences,
 			);
 			const supporting = yield* loadReviewSupportingEvidence(
 				sources,
 				request,
 				pages.localRelationships,
-				pages.lexicalOccurrences,
+				pages.lexicalOccurrences.occurrences,
 			);
 			gaps.push(...supporting.gaps);
 			if (request.beforeLine === null) gaps.push("before_position_not_provided");
@@ -117,7 +123,8 @@ export class ReviewEvidenceRetrievalService {
 				head,
 				before: beforeRange,
 				localRelationships: pages.localRelationships,
-				lexicalOccurrences: pages.lexicalOccurrences,
+				lexicalOccurrences: pages.lexicalOccurrences.occurrences,
+				lexicalScope: pages.lexicalOccurrences.scope,
 				supportingRanges: supporting.ranges,
 				pendingSources: supporting.pending,
 				gaps,
@@ -139,16 +146,26 @@ export class ReviewEvidenceRetrievalService {
 
 	private searchOccurrences(
 		request: ReviewSourceEvidenceRequest,
-	): Effect.Effect<ReviewBatchedSourceSearchResult | null> {
-		if (request.symbol === null) return Effect.succeed(null);
-		return this.search({
-			role: request.source.role,
-			prefix: request.prefix,
-			cursor: null,
-			limit: 50,
-			mode: "content",
-			query: request.symbol,
-			scanLimit: 20,
+	): Effect.Effect<ScopedOccurrences> {
+		if (request.symbol === null) return Effect.succeed({ occurrences: null, scope: null });
+		const query = request.symbol;
+		return Effect.gen({ self: this }, function* () {
+			let prefix = request.prefix || localPrefix(request.source.path);
+			while (true) {
+				const occurrences = yield* this.search({
+					role: request.source.role,
+					prefix,
+					cursor: null,
+					limit: 50,
+					mode: "content",
+					query,
+					scanLimit: 20,
+				});
+				const next = broaderPrefix(prefix, request.source.path);
+				if (next === null || !needsBroaderSearch(occurrences, request.source.path))
+					return { occurrences, scope: lexicalScope(prefix, next) };
+				prefix = next;
+			}
 		});
 	}
 
@@ -204,6 +221,36 @@ export class ReviewEvidenceRetrievalService {
 			return partial(state.progress, "result_limit");
 		});
 	}
+}
+
+function localPrefix(path: string): string {
+	const directory = posix.dirname(path);
+	return directory === "." ? "" : `${directory}/`;
+}
+
+function broaderPrefix(prefix: string, path: string): string | null {
+	if (prefix === "") return null;
+	const packagePrefix = sourcePackagePrefix(path);
+	if (packagePrefix === null) return "";
+	if (prefix.startsWith(packagePrefix) && prefix !== packagePrefix) return packagePrefix;
+	return "";
+}
+
+function sourcePackagePrefix(path: string): string | null {
+	return /^(?:apps|packages)\/[^/]+\//.exec(path)?.[0] ?? null;
+}
+
+function lexicalScope(prefix: string, next: string | null): ReviewLexicalScope {
+	if (prefix === "") return { kind: "repository" };
+	return { kind: "scoped", prefix, nextScopePrefix: next };
+}
+
+function needsBroaderSearch(occurrences: ReviewBatchedSourceSearchResult, path: string): boolean {
+	return (
+		occurrences.kind === "page" &&
+		occurrences.status === "complete" &&
+		!occurrences.matches.some((match) => match.source.path !== path)
+	);
 }
 
 function lookup<A>(request: (signal: AbortSignal) => Promise<A>, failure: A): Effect.Effect<A> {

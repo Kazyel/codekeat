@@ -91,6 +91,110 @@ async function executeSearch(catalog: ReviewSourceCatalog, request: ReviewSource
 }
 
 describe("Evidence retrieval tools", () => {
+	it.each([
+		{
+			consumer: "apps/api/src/cost/caller.ts",
+			prefixes: ["apps/api/src/cost/"],
+			scope: { kind: "scoped", prefix: "apps/api/src/cost/", nextScopePrefix: "apps/api/" },
+		},
+		{
+			consumer: "apps/api/tests/cost.test.ts",
+			prefixes: ["apps/api/src/cost/", "apps/api/"],
+			scope: { kind: "scoped", prefix: "apps/api/", nextScopePrefix: "" },
+		},
+		{
+			consumer: "apps/web/src/caller.ts",
+			prefixes: ["apps/api/src/cost/", "apps/api/", ""],
+			scope: { kind: "repository" },
+		},
+		{
+			consumer: null,
+			prefixes: ["apps/api/src/cost/", "apps/api/", ""],
+			scope: { kind: "repository" },
+		},
+	])(
+		"broadens lexical evidence only until an external occurrence is found: $consumer",
+		async ({ consumer, prefixes, scope }) => {
+			const head = document(
+				"head",
+				"apps/api/src/cost/cost.ts",
+				"export function calculateCost(): number { return 1; }",
+			);
+			const documents = [head];
+			if (consumer !== null) documents.push(document("head", consumer, "calculateCost()"));
+			const { catalog } = createCatalog(documents);
+			const searches = vi.spyOn(catalog, "search");
+			const result = await Effect.runPromise(
+				reviewEvidenceRetrieval(catalog).evidence({
+					source: head.source,
+					line: 1,
+					beforeLine: null,
+					symbol: "calculateCost",
+					prefix: "",
+				}),
+			);
+			expect(result.lexicalScope).toEqual(scope);
+			expect(searches.mock.calls.map(([request]) => request.prefix)).toEqual(prefixes);
+			if (result.lexicalOccurrences?.kind !== "page")
+				throw new Error("Expected literal occurrences");
+			expect(result.lexicalOccurrences.status).toBe("complete");
+			expect(result.lexicalOccurrences.matches.map((match) => match.source.path)).toEqual(
+				documents.map((item) => item.source.path),
+			);
+			// Explicit global search remains available after a narrow evidence lookup.
+			expect(await executeSearch(catalog, { ...SEARCH, prefix: "" })).toMatchObject({
+				status: "complete",
+				totalSources: documents.length,
+			});
+		},
+	);
+
+	it.each(["partial", "unavailable"] as const)(
+		"preserves an incomplete local lookup without claiming repository coverage: %s",
+		async (outcome) => {
+			const head = document(
+				"head",
+				"packages/domain/src/cost.ts",
+				"export function calculateCost(): number { return 1; }",
+			);
+			const { catalog } = createCatalog([head]);
+			const search = vi.spyOn(catalog, "search");
+			if (outcome === "partial")
+				search.mockResolvedValue({
+					kind: "page",
+					matches: [],
+					scannedSources: 1,
+					totalSources: 1,
+					unavailable: [
+						{ kind: "unavailable", reason: "request_failed", source: head.source },
+					],
+					nextCursor: null,
+				});
+			else search.mockResolvedValue({ kind: "unavailable", reason: "request_failed" });
+			const result = await Effect.runPromise(
+				reviewEvidenceRetrieval(catalog).evidence({
+					source: head.source,
+					line: 1,
+					beforeLine: null,
+					symbol: "calculateCost",
+					prefix: "",
+				}),
+			);
+			expect(search).toHaveBeenCalledTimes(1);
+			expect(result.lexicalScope).toEqual({
+				kind: "scoped",
+				prefix: "packages/domain/src/",
+				nextScopePrefix: "packages/domain/",
+			});
+			expect(result.status).toBe("partial");
+			const expected =
+				outcome === "partial"
+					? { status: "partial", incompleteReason: "source_unavailable" }
+					: { kind: "unavailable", reason: "request_failed" };
+			expect(result.lexicalOccurrences).toMatchObject(expected);
+		},
+	);
+
 	it("returns late matches in one model tool call after traversing 129 sources, and shares repeated lookups", async () => {
 		const documents = Array.from({ length: 129 }, (_, index) =>
 			document(

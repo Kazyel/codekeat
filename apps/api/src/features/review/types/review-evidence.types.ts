@@ -56,6 +56,14 @@ export interface ReviewSupportingEvidenceRange extends ReviewEvidencePendingSour
 	readonly range: ReviewEvidenceRange;
 }
 
+export type ReviewLexicalScope =
+	| { readonly kind: "repository" }
+	| {
+			readonly kind: "scoped";
+			readonly prefix: string;
+			readonly nextScopePrefix: string | null;
+	  };
+
 export interface ReviewSourceEvidenceResult {
 	readonly kind: "evidence";
 	readonly status: "complete" | "partial";
@@ -64,6 +72,8 @@ export interface ReviewSourceEvidenceResult {
 	readonly localRelationships: ReviewSourceListPage | ReviewSourceUnavailable;
 	/** Literal occurrences do not establish symbol identity or semantic callers. */
 	readonly lexicalOccurrences: ReviewBatchedSourceSearchResult | null;
+	/** Completeness describes this scope; a narrower lookup does not prove repository-wide absence. */
+	readonly lexicalScope: ReviewLexicalScope | null;
 	readonly supportingRanges: readonly ReviewSupportingEvidenceRange[];
 	readonly pendingSources: readonly ReviewEvidencePendingSource[];
 	readonly gaps: readonly string[];
