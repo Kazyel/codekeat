@@ -302,6 +302,145 @@ describe("review evidence provenance through Google transport", () => {
 		expect(requests[5]).not.toContain("original-source");
 	});
 
+	it.each(["{not-json", JSON.stringify({ findings: [] })])(
+		"repairs invalid structured output while preserving its paid receipt (%s)",
+		async (text) => {
+			const { model, requests } = harness([google([{ text }]), output(conclusion(HEAD))]);
+			const receipts: number[] = [];
+			await expect(
+				model.review(MODEL, INPUT, CHUNK, {
+					...execution(catalog()),
+					recordUsage: (receipt) => {
+						receipts.push(receipt.stepNumber);
+					},
+				}),
+			).resolves.toMatchObject({ findings: [], usage: { inputTokens: 20, outputTokens: 2 } });
+			expect(requests).toHaveLength(2);
+			expect(receipts).toEqual([0, 1]);
+			const continued = z
+				.object({
+					contents: z.array(
+						z.object({
+							role: z.string(),
+							parts: z.array(z.object({ text: z.string().optional() })),
+						}),
+					),
+				})
+				.parse(JSON.parse(requests[1]!));
+			expect(
+				continued.contents
+					.filter((entry) => entry.role === "model")
+					.flatMap((entry) => entry.parts.map((part) => part.text)),
+			).toContain(text);
+		},
+	);
+
+	it("fails after one unsuccessful repair and retains both rejected responses and receipts", async () => {
+		const bad = conclusion({ ...HEAD, revision: "invented" });
+		const rejected: string[] = [];
+		const receipts: number[] = [];
+		const { model, requests } = harness([output(bad), output(bad)]);
+		await expect(
+			model.review(MODEL, INPUT, CHUNK, {
+				...execution(catalog(CONTENT, rejected)),
+				recordUsage: (receipt) => {
+					receipts.push(receipt.stepNumber);
+				},
+			}),
+		).rejects.toMatchObject({
+			issue: "context_response_invalid",
+			failure: { code: "evidence_revision_mismatch", hypothesisIndex: 0, evidenceIndex: 0 },
+		});
+		expect(requests).toHaveLength(2);
+		expect(receipts).toEqual([0, 1]);
+		expect(rejected).toHaveLength(2);
+	});
+
+	it.each(["MAX_TOKENS", "SAFETY"])(
+		"does not repair a provider response terminated with %s",
+		async (finishReason) => {
+			const { model, requests } = harness([google([{ text: "{not-json" }], finishReason)]);
+			await expect(
+				model.review(MODEL, INPUT, CHUNK, execution(catalog())),
+			).rejects.toBeInstanceOf(Error);
+			expect(requests).toHaveLength(1);
+		},
+	);
+
+	it("does not repair missing usage metadata even when the conclusion is invalid", async () => {
+		const response = Response.json({
+			candidates: [
+				{
+					content: {
+						role: "model",
+						parts: [
+							{
+								text: JSON.stringify({
+									conclusion: conclusion({ ...HEAD, revision: "invented" }),
+									findings: [],
+								}),
+							},
+						],
+					},
+					finishReason: "STOP",
+				},
+			],
+		});
+		const { model, requests } = harness([response]);
+		await expect(model.review(MODEL, INPUT, CHUNK, execution(catalog()))).rejects.toMatchObject(
+			{ issue: "usage_metadata_invalid" },
+		);
+		expect(requests).toHaveLength(1);
+	});
+
+	it("does not repair after cancellation and preserves the received usage", async () => {
+		const controller = new AbortController();
+		const receipts: number[] = [];
+		const { model, requests } = harness([
+			output(conclusion({ ...HEAD, revision: "invented" })),
+		]);
+		await expect(
+			model.review(MODEL, INPUT, CHUNK, {
+				...execution(catalog()),
+				signal: controller.signal,
+				recordUsage: (receipt) => {
+					receipts.push(receipt.stepNumber);
+					controller.abort();
+				},
+			}),
+		).rejects.toBeInstanceOf(Error);
+		expect(requests).toHaveLength(1);
+		expect(receipts).toEqual([0]);
+	});
+
+	it("reserves the third repair step for output and does not start a second investigation", async () => {
+		const read = () =>
+			call("source_read", {
+				source: { role: "head", path: PATH },
+				range: { kind: "lines", startLine: 1, lineCount: 3 },
+			});
+		const { model, requests } = harness([
+			output(conclusion({ ...HEAD, revision: "invented" })),
+			read(),
+			read(),
+			output(conclusion(HEAD)),
+		]);
+		await expect(
+			model.review(MODEL, INPUT, CHUNK, execution(catalog())),
+		).resolves.toMatchObject({ findings: [] });
+		expect(requests).toHaveLength(4);
+		const finalRequest = z
+			.object({
+				tools: z
+					.array(
+						z.object({ functionDeclarations: z.array(z.object({ name: z.string() })) }),
+					)
+					.optional(),
+			})
+			.parse(JSON.parse(requests[3]!));
+		expect(finalRequest.tools).toBeUndefined();
+	});
+
 	it("accepts supplied inline sources and sends an associated candidate to the caller", async () => {
 		const { model } = harness([output(conclusion(HEAD, "candidate"), [FINDING])]);
 		await expect(model.review(MODEL, INPUT, CHUNK)).resolves.toMatchObject({

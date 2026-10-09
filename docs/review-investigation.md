@@ -1,6 +1,6 @@
 # Investigar uma alteração com evidências
 
-A estratégia `evidence-investigation-v7` combina recuperação de fontes, cenários verificáveis e
+A estratégia `evidence-investigation-v8` combina recuperação de fontes, cenários verificáveis e
 uma conclusão explícita por unidade. As reviews continuam consultivas. O registro de um cenário
 é uma análise do agente apoiada em fontes; testes executáveis e avaliação humana medem sua qualidade.
 
@@ -50,6 +50,31 @@ lacunas ou sinais de risco: retorno antecipado em cálculo financeiro, mudança 
 operações de persistência. Essa chamada recebe os dados originais e uma tarefa específica. Ela
 conserva os recibos de consumo, preserva as lacunas anteriores e envia candidatos ao juiz existente.
 Os sinais são heurísticos; a avaliação controla o custo e verifica seu benefício.
+
+## Corrigir uma resposta rejeitada
+
+O host distingue revisão incorreta, evidência não entregue, cobertura ausente, localização fora das
+linhas alteradas e divergências entre hipóteses candidatas e findings. Os diagnósticos incluem códigos
+fixos e posições nos arrays da resposta; não incluem conteúdo privado nos logs. Um checkpoint
+recuperável rejeitado devolve `correction_required` e libera novamente as ferramentas de investigação.
+Um recibo de fonte malformado permanece uma falha do host e não admite reparação pelo modelo.
+
+Uma resposta final inválida pode receber uma única tentativa de correção, com até duas rodadas de
+consulta e uma rodada final sem ferramentas. A tentativa continua o histórico efetivamente enviado
+pelo AI SDK, preserva assinaturas do provider e pares de chamadas/resultados, e reutiliza as fontes
+já coletadas. A mensagem de correção informa a regra rejeitada. O modelo deve recuperar evidências
+faltantes, conservar findings sustentados e explicitar lacunas quando não puder concluir.
+
+A mesma validação de schema, cobertura, localização e proveniência se aplica à resposta corrigida.
+Uma segunda rejeição encerra a execução. Cancelamento, falha de uso, transporte, capacidade,
+indisponibilidade obrigatória e encerramento do provider por limite ou bloqueio não reiniciam a
+investigação. Os limites de admissão, prazos e recibos de consumo abrangem a correção.
+
+Com um catálogo disponível, respostas rejeitadas e seu histórico efetivo são preservados integralmente
+em artefatos privados, inclusive na segunda rejeição. O arquivo usa a mesma proteção e retenção das
+fontes de investigação. Logs conservam somente o diagnóstico, IDs e número da tentativa. Sem catálogo,
+o diagnóstico permanece disponível, mas não há arquivo da resposta. Essa informação permite
+investigar a regra concreta sem reconstruir a resposta a partir do consumo ou da duração.
 
 ## Manter o contexto entre etapas
 

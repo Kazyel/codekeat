@@ -75,6 +75,11 @@ de fallback e acumula retries autorizados. Custos são arredondados ao persistir
 o snapshot de preços recuperam a precisão anterior. Ausência de metadata permanece desconhecida,
 sem conversão silenciosa para custo zero.
 
+A correção de conclusões inválidas usa uma recuperação Effect limitada a uma continuação do histórico
+efetivo do SDK. Ela conserva o estado de evidências e os recibos, com duas rodadas de consulta e uma
+finalização. Não aplica `Effect.retry` à investigação inteira. O host revalida integralmente a saída
+e mantém falhas de transporte, uso, capacidade e cancelamento fora dessa política.
+
 Para retries de falhas transitórias, use `Effect.retry` com uma política `Schedule` limitada e prazo
 total explícito. Defina quais erros permitem repetição e quais operações são seguras para repetir.
 O SDK ou adaptador que já possui uma política de retry permanece seu único dono. A renovação OAuth
