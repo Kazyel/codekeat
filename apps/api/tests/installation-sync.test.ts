@@ -2,6 +2,10 @@ import { Probot } from "probot";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { GitHubInstallationSyncService } from "#features/github";
+import {
+	requestReviewFromGithub,
+	type GitHubReviewWorkflowDependencies,
+} from "#core/workflows/request-review-from-github";
 import { createTestDatabase, type TestDatabase } from "./test-database.js";
 import { registerGitHubInstallationHandlers } from "../src/features/github/controllers/github-installation.controller.js";
 
@@ -113,6 +117,143 @@ function repository(id: number): Repository {
 }
 
 describe("GitHub installation inventory", () => {
+	it("waits for the newest inventory before reviewing a concurrently added repository", async () => {
+		const { app, database, service } = setup();
+		app.repositories.set(1, [repository(10)]);
+		const started = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const readPage = app.readRepositories.bind(app);
+		vi.spyOn(app, "readRepositories").mockImplementationOnce(async (id, page) => {
+			const snapshot = await readPage(id, page);
+			started.resolve();
+			await release.promise;
+			return snapshot;
+		});
+		const originalSync = service.reconcile(1);
+		await started.promise;
+		app.repositories.set(1, [repository(11)]);
+		const newestSync = service.reconcile(1);
+		const dependencies = reviewDependencies(database, service);
+		const review = requestReviewFromGithub(reviewEvent(11), dependencies);
+		release.resolve();
+
+		await Promise.all([originalSync, newestSync, review]);
+
+		expect(database.githubAccessRepository.findRepository(10, 1)).toBeNull();
+		expect(database.githubAccessRepository.findRepository(11, 1)?.status).toBe("active");
+		expect(dependencies.queue.enqueueReview).toHaveBeenCalledOnce();
+	});
+
+	it("verifies unknown pull request access with GitHub instead of trusting its payload", async () => {
+		const { app, database, service } = setup();
+		app.repositories.set(1, [repository(10)]);
+		const dependencies = reviewDependencies(database, service);
+
+		await requestReviewFromGithub(reviewEvent(10), dependencies);
+
+		expect(database.githubAccessRepository.findRepository(10, 1)?.status).toBe("active");
+		expect(dependencies.queue.enqueueReview).toHaveBeenCalledOnce();
+	});
+
+	it.each(["restored", "revoked"] as const)(
+		"confirms %s repository access for a review arriving before its inventory delivery",
+		async (access) => {
+			const { app, database, service } = setup();
+			app.repositories.set(1, [repository(10)]);
+			await service.reconcile(1);
+			database.reviewRunRepository.createReviewRun({
+				id: "historical-run",
+				githubRepositoryId: 10,
+				pullRequestNumber: 99,
+				headSha: "a".repeat(40),
+				trigger: "opened",
+				status: "queued",
+				policyJson: '{"enabled":true,"version":1}',
+				policySource: "default",
+				policyWarningCode: null,
+				ignoreReason: null,
+				model: database.selectedModel,
+			});
+			app.repositories.set(1, []);
+			await service.reconcile(1);
+			expect(database.githubAccessRepository.findRepository(10, 1)?.status).toBe("removed");
+			if (access === "restored") app.repositories.set(1, [repository(10)]);
+			const dependencies = reviewDependencies(database, service);
+
+			await requestReviewFromGithub(reviewEvent(10), dependencies);
+
+			expect(database.githubAccessRepository.findRepository(10, 1)?.status).toBe(
+				access === "restored" ? "active" : "removed",
+			);
+			expect(dependencies.queue.enqueueReview).toHaveBeenCalledTimes(
+				access === "restored" ? 1 : 0,
+			);
+		},
+	);
+
+	it("waits for an authorized reactivation before reviewing a suspended installation", async () => {
+		const { app, database, service } = setup();
+		app.repositories.set(1, [repository(10)]);
+		await service.reconcile(1);
+		service.deactivate(1, "suspended");
+		const started = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const readPage = app.readRepositories.bind(app);
+		vi.spyOn(app, "readRepositories").mockImplementationOnce(async (id, page) => {
+			const snapshot = await readPage(id, page);
+			started.resolve();
+			await release.promise;
+			return snapshot;
+		});
+		const reactivation = service.reconcile(1);
+		await started.promise;
+		const dependencies = reviewDependencies(database, service);
+		const review = requestReviewFromGithub(reviewEvent(10), dependencies);
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		release.resolve();
+
+		await Promise.all([reactivation, review]);
+
+		expect(database.githubAccessRepository.findInstallation(1)?.status).toBe("active");
+		expect(dependencies.queue.enqueueReview).toHaveBeenCalledOnce();
+	});
+
+	it.each([10, 11])(
+		"does not retain a failed refresh when reviewing repository %i",
+		async (id) => {
+			const { app, database, service } = setup();
+			app.repositories.set(1, [repository(10)]);
+			await service.reconcile(1);
+			app.repositories.set(1, [repository(10), repository(11)]);
+			const read = vi
+				.spyOn(app, "readRepositories")
+				.mockRejectedValueOnce(new Error("offline"));
+			await expect(service.reconcile(1)).rejects.toThrow("offline");
+			read.mockRestore();
+			const dependencies = reviewDependencies(database, service);
+
+			await requestReviewFromGithub(reviewEvent(id), dependencies);
+
+			expect(dependencies.queue.enqueueReview).toHaveBeenCalledOnce();
+		},
+	);
+
+	it.each(["suspended", "deleted"] as const)(
+		"does not restore a known %s installation from a delayed review event",
+		async (status) => {
+			const { app, database, service } = setup();
+			app.repositories.set(1, [repository(10)]);
+			await service.reconcile(1);
+			service.deactivate(1, status);
+			const dependencies = reviewDependencies(database, service);
+
+			await requestReviewFromGithub(reviewEvent(10), dependencies);
+
+			expect(database.githubAccessRepository.findInstallation(1)?.status).toBe(status);
+			expect(dependencies.queue.enqueueReview).not.toHaveBeenCalled();
+		},
+	);
+
 	it("reconciles signed lifecycle deliveries instead of trusting repository payloads", async () => {
 		const { app, database, service } = setup();
 		const probot = new Probot({ githubToken: "test-token", secret: "test-secret" });
@@ -356,3 +497,54 @@ describe("GitHub installation inventory", () => {
 		);
 	});
 });
+
+function reviewDependencies(
+	database: TestDatabase,
+	installationSync: GitHubInstallationSyncService,
+): GitHubReviewWorkflowDependencies {
+	return {
+		accessRepository: database.githubAccessRepository,
+		installationSync,
+		allowedAccounts: new Set(["takeat"]),
+		deliveryRepository: database.webhookDeliveryRepository,
+		modelRepository: database.modelCatalogRepository,
+		reportRepository: database.reviewReportRepository,
+		runRepository: database.reviewRunRepository,
+		policyService: {
+			resolve: vi.fn().mockResolvedValue({
+				policy: { version: 1, enabled: true },
+				source: "default",
+				warningCode: null,
+			}),
+		},
+		queue: {
+			enqueueReview: vi.fn().mockResolvedValue(undefined),
+			enqueueReport: vi.fn().mockResolvedValue(undefined),
+		},
+	};
+}
+
+function reviewEvent(repositoryId: number) {
+	return {
+		delivery: {
+			deliveryId: `pull-request-${repositoryId}`,
+			eventName: "pull_request.opened",
+			installationId: 1,
+		},
+		isDraft: false,
+		pullRequestState: "open" as const,
+		request: {
+			deliveryId: `pull-request-${repositoryId}`,
+			installationId: 1,
+			accountLogin: "takeat",
+			repositoryId,
+			repositoryOwner: "takeat",
+			repositoryName: `repository-${repositoryId}`,
+			repositoryFullName: `takeat/repository-${repositoryId}`,
+			repositoryDefaultBranch: "trunk",
+			pullRequestNumber: 3,
+			headSha: "a".repeat(40),
+			trigger: "opened" as const,
+		},
+	};
+}

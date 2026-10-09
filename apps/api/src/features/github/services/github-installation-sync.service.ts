@@ -1,3 +1,4 @@
+import { Data, Effect } from "effect";
 import { z } from "zod";
 
 import type { GitHubAccessRepository } from "../repositories/github-access.repository.js";
@@ -23,6 +24,13 @@ const REPOSITORIES_PAGE_SCHEMA = z.object({
 });
 const API_ERROR_SCHEMA = z.object({ status: z.number() });
 const PAGE_SIZE = 100;
+const ACCESS_SYNCHRONIZATION_TIMEOUT_MS = 10_000;
+
+class GitHubAccessSynchronizationError extends Data.TaggedError(
+	"GitHubAccessSynchronizationError",
+)<{
+	readonly code: "synchronization_failed" | "synchronization_timeout";
+}> {}
 
 const MISSING_INSTALLATION_STATUSES: readonly number[] = [404, 410];
 type Installation = z.infer<typeof INSTALLATION_SCHEMA>;
@@ -50,7 +58,7 @@ interface GitHubInstallationApp {
 }
 
 interface Synchronization {
-	pending: Promise<DeliveryOutcome>;
+	pending: Promise<DeliveryOutcome> | null;
 	revision: number;
 }
 
@@ -97,11 +105,82 @@ export class GitHubInstallationSyncService {
 	reconcile(installationId: number): Promise<DeliveryOutcome> {
 		const synchronization = this.synchronizationFor(installationId);
 		const revision = ++synchronization.revision;
-		const pending = synchronization.pending
+		const previous =
+			synchronization.pending ?? Promise.resolve<DeliveryOutcome>({ kind: "handled" });
+		const pending = previous
 			.catch(() => ignored("previous_sync_failed"))
 			.then(() => this.reconcileCurrent(installationId, synchronization, revision));
 		synchronization.pending = pending;
+		const clearPending = (): void => {
+			if (synchronization.pending === pending) synchronization.pending = null;
+		};
+		void pending.then(clearPending, clearPending);
 		return pending;
+	}
+
+	ensureRepositoryAccess(installationId: number, repositoryId: number): Promise<void> {
+		// The wait deadline does not cancel an inventory shared with installation deliveries.
+		return Effect.runPromise(
+			this.ensureAccess(installationId, repositoryId).pipe(
+				Effect.timeoutOrElse({
+					duration: ACCESS_SYNCHRONIZATION_TIMEOUT_MS,
+					orElse: () =>
+						Effect.fail(
+							new GitHubAccessSynchronizationError({
+								code: "synchronization_timeout",
+							}),
+						),
+				}),
+			),
+		);
+	}
+
+	private ensureAccess(
+		installationId: number,
+		repositoryId: number,
+	): Effect.Effect<void, GitHubAccessSynchronizationError> {
+		return Effect.gen({ self: this }, function* () {
+			yield* this.awaitCurrentSynchronization(installationId);
+			if (this.hasInactiveInstallation(installationId)) return;
+			const repository = this.accessRepository.findRepository(repositoryId, installationId);
+			if (repository?.status === "active") return;
+			yield* Effect.tryPromise({
+				try: () => this.reconcile(installationId),
+				catch: () =>
+					new GitHubAccessSynchronizationError({ code: "synchronization_failed" }),
+			});
+			yield* this.awaitCurrentSynchronization(installationId);
+		});
+	}
+
+	private awaitCurrentSynchronization(
+		installationId: number,
+	): Effect.Effect<void, GitHubAccessSynchronizationError> {
+		return Effect.gen({ self: this }, function* () {
+			const synchronization = this.synchronizations.get(installationId);
+			if (synchronization === undefined) return;
+			for (;;) {
+				const pending = synchronization.pending;
+				if (pending === null) return;
+				const revision = synchronization.revision;
+				const result = yield* Effect.result(
+					Effect.tryPromise({
+						try: () => pending,
+						catch: () =>
+							new GitHubAccessSynchronizationError({
+								code: "synchronization_failed",
+							}),
+					}),
+				);
+				if (synchronization.revision !== revision) continue;
+				return yield* Effect.fromResult(result).pipe(Effect.asVoid);
+			}
+		});
+	}
+
+	private hasInactiveInstallation(installationId: number): boolean {
+		const installation = this.accessRepository.findInstallation(installationId);
+		return installation !== null && installation.status !== "active";
 	}
 
 	deactivate(installationId: number, status: "suspended" | "deleted"): void {
@@ -112,8 +191,8 @@ export class GitHubInstallationSyncService {
 	private synchronizationFor(installationId: number): Synchronization {
 		const existing = this.synchronizations.get(installationId);
 		if (existing !== undefined) return existing;
-		const synchronization = {
-			pending: Promise.resolve<DeliveryOutcome>({ kind: "handled" }),
+		const synchronization: Synchronization = {
+			pending: null,
 			revision: 0,
 		};
 		this.synchronizations.set(installationId, synchronization);

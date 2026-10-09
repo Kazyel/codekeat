@@ -11,7 +11,7 @@ export class WebhookDeliveryRepository {
 
 	claimDelivery(input: WebhookDeliveryInput): "claimed" | "duplicate" {
 		const current = this.connection.db
-			.select({ status: webhookDeliveries.status })
+			.select({ status: webhookDeliveries.status, reasonCode: webhookDeliveries.reasonCode })
 			.from(webhookDeliveries)
 			.where(eq(webhookDeliveries.deliveryId, input.deliveryId))
 			.get();
@@ -21,7 +21,7 @@ export class WebhookDeliveryRepository {
 			return "claimed";
 		}
 
-		if (current.status !== "failed") {
+		if (!canRetryDelivery(current.status, current.reasonCode)) {
 			return "duplicate";
 		}
 
@@ -63,6 +63,7 @@ export class WebhookDeliveryRepository {
 			.set({
 				status: "processing",
 				attempts: sql`${webhookDeliveries.attempts} + 1`,
+				reasonCode: null,
 				failureCode: null,
 				updatedAt: currentTimestamp(),
 			})
@@ -82,4 +83,12 @@ export class WebhookDeliveryRepository {
 			.where(eq(webhookDeliveries.deliveryId, deliveryId))
 			.run();
 	}
+}
+
+function canRetryDelivery(status: DeliveryStatus, reasonCode: string | null): boolean {
+	return (
+		status === "failed" ||
+		(status === "ignored" &&
+			(reasonCode === "installation_not_active" || reasonCode === "repository_not_active"))
+	);
 }

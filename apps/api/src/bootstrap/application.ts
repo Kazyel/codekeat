@@ -23,7 +23,7 @@ import {
 	WebhookDeliveryRepository,
 } from "#features/github";
 import { createModelCatalogController, ModelCatalogRepository } from "../features/models/index.js";
-import { GeminiReviewService } from "#integrations/gemini";
+import { createGoogleContextCapacityFetch, GeminiReviewService } from "#integrations/gemini";
 import {
 	createReviewQualityController,
 	createReviewReadController,
@@ -82,7 +82,10 @@ export async function configureApplication(
 		);
 
 		const model = new GeminiReviewService(
-			createGoogle({ apiKey: environment.googleApiKey }),
+			createGoogle({
+				apiKey: environment.googleApiKey,
+				fetch: createGoogleContextCapacityFetch(fetch, environment.googleApiKey),
+			}),
 			new TakeatMcpTool(environment.takeatMcpUrl, takeatMcpAccessTokenService, app.log),
 			app.log,
 		);
@@ -106,7 +109,12 @@ export async function configureApplication(
 		/*
 			Fila de trabalho de revisão local.
 		*/
-		const queue = new ReviewQueueService(reviewTask, publisher, app.log);
+		const queue = new ReviewQueueService(
+			reviewTask,
+			publisher,
+			app.log,
+			environment.reviewConcurrency,
+		);
 		processor = new ReviewRunProcessorService(
 			reviewRunRepository,
 			new GitHubReviewInputService(app, githubAccessRepository),
@@ -132,6 +140,7 @@ export async function configureApplication(
 			requestReview: (event, policyService) =>
 				requestReviewFromGithub(event, {
 					accessRepository: githubAccessRepository,
+					installationSync,
 					allowedAccounts: environment.allowedGithubAccounts,
 					deliveryRepository: webhookDeliveryRepository,
 					policyService,

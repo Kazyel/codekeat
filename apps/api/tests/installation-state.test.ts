@@ -87,13 +87,36 @@ describe("installation state", () => {
 		activateRepository(database);
 
 		await requestReviewFromGithub({ ...EVENT, pullRequestState: "closed" }, dependencies);
+		await requestReviewFromGithub({ ...EVENT, pullRequestState: "closed" }, dependencies);
 
 		expect(database.connection.db.select().from(webhookDeliveries).all()).toMatchObject([
-			{ status: "ignored", reasonCode: "closed_pull_request" },
+			{ status: "ignored", reasonCode: "closed_pull_request", attempts: 1 },
 		]);
 		expect(database.connection.db.select().from(reviewRuns).all()).toEqual([]);
 		database.close();
 	});
+
+	it.each(["installation_not_active", "repository_not_active"])(
+		"re-evaluates a legacy %s delivery after verified access is restored",
+		async (reasonCode) => {
+			const { database, dependencies } = createWorkflow();
+			if (reasonCode === "installation_not_active") {
+				database.githubAccessRepository.setInstallationStatus(1, "suspended");
+			}
+			await requestReviewFromGithub(EVENT, dependencies);
+			expectIgnored(database, dependencies, reasonCode);
+			database.githubAccessRepository.setInstallationStatus(1, "active");
+			activateRepository(database);
+
+			await requestReviewFromGithub(EVENT, dependencies);
+
+			expect(database.connection.db.select().from(webhookDeliveries).all()).toMatchObject([
+				{ status: "handled", attempts: 2 },
+			]);
+			expect(dependencies.queue.enqueueReview).toHaveBeenCalledOnce();
+			database.close();
+		},
+	);
 
 	it("queues a review only for an active repository in the active installation", async () => {
 		const { database, dependencies } = createWorkflow();
@@ -124,6 +147,7 @@ function createWorkflow(): {
 		database,
 		dependencies: {
 			accessRepository: database.githubAccessRepository,
+			installationSync: { ensureRepositoryAccess: vi.fn().mockResolvedValue(undefined) },
 			allowedAccounts,
 			deliveryRepository: database.webhookDeliveryRepository,
 			modelRepository: database.modelCatalogRepository,

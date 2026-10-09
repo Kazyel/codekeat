@@ -9,6 +9,7 @@ import {
 import type { ModelCatalogRepository } from "../../features/models/index.js";
 import {
 	GitHubAccessRepository,
+	type GitHubInstallationSyncService,
 	GitHubRepositoryPolicyService,
 	isAllowedGithubAccount,
 	processWebhookDelivery,
@@ -28,6 +29,7 @@ export interface GitHubReviewWorkflowDependencies {
 	readonly deliveryRepository: WebhookDeliveryRepository;
 	readonly policyService: Pick<GitHubRepositoryPolicyService, "resolve">;
 	readonly accessRepository: GitHubAccessRepository;
+	readonly installationSync: Pick<GitHubInstallationSyncService, "ensureRepositoryAccess">;
 	readonly reportRepository: ReviewReportRepository;
 	readonly modelRepository: ModelCatalogRepository;
 	readonly runRepository: ReviewRunRepository;
@@ -53,7 +55,7 @@ export async function requestReviewFromGithub(
 				return { kind: "ignored", reasonCode: "installation_not_active" };
 			}
 
-			const ignoreReason = preparePullRequestRepository(
+			const ignoreReason = await preparePullRequestRepository(
 				{
 					isDraft: event.isDraft,
 					pullRequestState: event.pullRequestState,
@@ -85,14 +87,17 @@ export async function requestReviewFromGithub(
 	return { delivery, policyWarningCode };
 }
 
-export function preparePullRequestRepository(
+export async function preparePullRequestRepository(
 	event: {
 		readonly isDraft: boolean;
 		readonly pullRequestState: "open" | "closed";
 		readonly request: RequestReview;
 	},
-	dependencies: Pick<GitHubReviewWorkflowDependencies, "accessRepository" | "allowedAccounts">,
-): string | null {
+	dependencies: Pick<
+		GitHubReviewWorkflowDependencies,
+		"accessRepository" | "allowedAccounts" | "installationSync"
+	>,
+): Promise<string | null> {
 	if (event.pullRequestState === "closed") {
 		return "closed_pull_request";
 	}
@@ -105,6 +110,10 @@ export function preparePullRequestRepository(
 		return "github_account_not_allowed";
 	}
 
+	await dependencies.installationSync.ensureRepositoryAccess(
+		event.request.installationId,
+		event.request.repositoryId,
+	);
 	return getRepositoryAccessIgnoreReason(event.request, dependencies.accessRepository);
 }
 
