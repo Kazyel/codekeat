@@ -13,12 +13,15 @@ import {
 	type ReviewSourceListPage,
 	type ReviewSourceSearchPage,
 	type ReviewSourceUnavailable,
+	type ReviewBatchedSourceSearchResult,
+	type ReviewSourceEvidenceResult,
+	boundReviewEvidencePage,
+	reviewEvidenceRetrieval,
 	ReviewModelResponseError,
 	ReviewSourceCoverageIncomplete,
 } from "#features/review";
 
 const ROLE = z.enum(["head", "before", "pull_request", "investigation"]);
-const SOURCE_PAGE_COLUMNS = 4_096;
 const SOURCE = z
 	.object({
 		role: ROLE,
@@ -59,6 +62,8 @@ type SourceResult =
 	| ReviewSourceReadResult
 	| ReviewSourceListPage
 	| ReviewSourceSearchPage
+	| ReviewBatchedSourceSearchResult
+	| ReviewSourceEvidenceResult
 	| ReviewSourceUnavailable;
 
 /** Tools cannot choose hosts, repositories or SHAs; the catalog owns that authorization. */
@@ -68,11 +73,14 @@ export class ReviewSourceTools {
 	private readonly recorded: ReviewContextExchange[] = [];
 	private failure: ReviewModelResponseError | null = null;
 	private readonly readIntervals = new Map<string, { start: number; end: number }[]>();
+	private readonly retrieval;
 
 	constructor(
 		private readonly sources: ReviewSourceCatalog,
 		private readonly signal: AbortSignal,
-	) {}
+	) {
+		this.retrieval = reviewEvidenceRetrieval(sources);
+	}
 
 	get exchanges(): readonly ReviewContextExchange[] {
 		return this.recorded;
@@ -95,14 +103,33 @@ export class ReviewSourceTools {
 			}),
 			source_search: tool({
 				description:
-					"Search literal text or paths in the exact snapshot. Returns positions, not potentially huge snippets. Read matching ranges with source_read; follow nextCursor even when the current page has no matches.",
+					"Search literal text or paths in the exact snapshot. The host traverses empty scan pages. Returns positions and complete/partial status. Read matching ranges with source_read. Follow nextCursor when partial; a deadline before a first page has a null cursor meaning restart the same query. Unavailable or partial empty searches do not prove absence of consumers.",
 				inputSchema: PAGE.extend({
 					mode: z.enum(["path", "content"]),
 					query: z.string().min(1),
 					scanLimit: z.number().int().min(1).max(20),
 				}),
 				execute: (args) =>
-					this.call("source_search", args, () => this.sources.search(args, this.signal)),
+					this.call("source_search", args, () =>
+						Effect.runPromise(this.retrieval.search(args), { signal: this.signal }),
+					),
+			}),
+			source_evidence: tool({
+				description:
+					"Retrieve an investigation packet: function enclosure when confidently recognized, otherwise an explicit wider file window; optional before position, local imports/tests, and literal reverse symbol occurrences. Occurrences are lexical, not semantic callers. Check gaps and follow source_read nextRange, source_related nextCursor, or source_search nextCursor. Supply beforeLine from the diff; do not assume head positions match before.",
+				inputSchema: z
+					.object({
+						source: SOURCE.extend({ role: z.literal("head") }),
+						line: z.number().int().positive(),
+						beforeLine: z.number().int().positive().nullable(),
+						symbol: z.string().min(1).nullable(),
+						prefix: z.string(),
+					})
+					.strict(),
+				execute: (args) =>
+					this.call("source_evidence", args, () =>
+						Effect.runPromise(this.retrieval.evidence(args), { signal: this.signal }),
+					),
 			}),
 			source_related: tool({
 				description:
@@ -135,7 +162,7 @@ export class ReviewSourceTools {
 	}
 
 	private async read(request: ReviewSourceReadRequest): Promise<ReviewSourceReadResult> {
-		const page = boundedReadPage(await this.sources.read(request, this.signal));
+		const page = boundReviewEvidencePage(await this.sources.read(request, this.signal));
 		if (page.kind === "loaded" && page.startLine === 1 && page.endLine === 1) {
 			this.recordReadInterval(page);
 		}
@@ -195,40 +222,17 @@ export class ReviewSourceTools {
 
 function observedSourceCount(result: SourceResult): number {
 	if (result.kind === "loaded") return 1;
+	if (result.kind === "evidence") return evidenceSourceCount(result);
 	if (result.kind !== "page") return 0;
 	return "entries" in result ? result.entries.length : result.scannedSources;
 }
 
-/** Page limits control transport only; the exact remaining source stays reachable via nextRange. */
-function boundedReadPage(page: ReviewSourceReadResult): ReviewSourceReadResult {
-	if (page.kind !== "loaded" || page.content.length <= SOURCE_PAGE_COLUMNS) return page;
-	const lastNewline = page.content.lastIndexOf("\n", SOURCE_PAGE_COLUMNS - 1);
-	if (lastNewline >= 0) return boundedLines(page, lastNewline + 1);
-	return {
-		...page,
-		content: page.content.slice(0, SOURCE_PAGE_COLUMNS),
-		endLine: page.startLine,
-		endColumn: page.startColumn + SOURCE_PAGE_COLUMNS,
-		nextRange: {
-			kind: "columns",
-			line: page.startLine,
-			startColumn: page.startColumn + SOURCE_PAGE_COLUMNS,
-			columnCount: SOURCE_PAGE_COLUMNS,
-		},
-	};
-}
-
-function boundedLines(page: ReviewSourceReadPage, end: number): ReviewSourceReadPage {
-	const content = page.content.slice(0, end);
-	const lines = content.split("\n");
-	const endLine = page.startLine + lines.length - 2;
-	return {
-		...page,
-		content,
-		endLine,
-		endColumn: (lines.at(-2)?.length ?? 0) + 1,
-		nextRange: { kind: "lines", startLine: endLine + 1, lineCount: 200 },
-	};
+function evidenceSourceCount(result: ReviewSourceEvidenceResult): number {
+	return (
+		Number(result.head.page.kind === "loaded") +
+		Number(result.before !== null && result.before.page.kind === "loaded") +
+		result.supportingRanges.filter((item) => item.range.page.kind === "loaded").length
+	);
 }
 
 export interface ReviewRequiredSourceRead {
