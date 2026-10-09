@@ -66,6 +66,8 @@ type SourceResult =
 	| ReviewSourceEvidenceResult
 	| ReviewSourceUnavailable;
 
+import type { ReviewPreparedEvidence } from "./review-initial-evidence.util.js";
+
 /** Tools cannot choose hosts, repositories or SHAs; the catalog owns that authorization. */
 export class ReviewSourceTools {
 	private readonly metrics = captureModelMetrics();
@@ -84,6 +86,15 @@ export class ReviewSourceTools {
 
 	get exchanges(): readonly ReviewContextExchange[] {
 		return this.recorded;
+	}
+
+	/** Called only after these exact pages have been placed in the model prompt. */
+	seedEvidence(prepared: ReviewPreparedEvidence): void {
+		this.recorded.push({
+			tool: "source_evidence",
+			argumentsJson: JSON.stringify(prepared.request),
+			responseJson: JSON.stringify(prepared.result),
+		});
 	}
 
 	tools(): ToolSet {

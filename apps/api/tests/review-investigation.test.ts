@@ -5,6 +5,7 @@ import { z } from "zod";
 import { GeminiReviewService } from "#integrations/gemini";
 import type {
 	ReviewConclusion,
+	ReviewExecution,
 	ReviewFinding,
 	ReviewInput,
 	ReviewSourceCatalog,
@@ -336,7 +337,10 @@ describe("evidence-driven investigation through the AI SDK", () => {
 	it.each(["review", "judge"] as const)(
 		"archives old large %s retrieval payloads without losing tool pairs, original content or continuations",
 		async (stage) => {
-			const ordinary = { ...chunk, diff: "@@ -1 +1 @@\n-old\n+new" };
+			const ordinary = {
+				...chunk,
+				diff: `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -3,1 +3,1 @@\n-old\n+new\n`,
+			};
 			const source = {
 				role: "head",
 				path,
@@ -387,6 +391,19 @@ describe("evidence-driven investigation through the AI SDK", () => {
 					}),
 			};
 			const h = harness([
+				...(stage === "judge"
+					? [
+							response({
+								judgments: [
+									{
+										index: 0,
+										kind: "needs_evidence",
+										gaps: ["Read the original source and its continuation"],
+									},
+								],
+							}),
+						]
+					: []),
 				...Array.from({ length: 4 }, () =>
 					call("source_read", {
 						source: { role: "head", path },
@@ -410,7 +427,7 @@ describe("evidence-driven investigation through the AI SDK", () => {
 			const execution = {
 				signal: new AbortController().signal,
 				sources: reads,
-				recordUsage: () => {},
+				recordUsage: vi.fn<ReviewExecution["recordUsage"]>(),
 				recordMetric: () => {},
 			};
 			const run =
@@ -439,7 +456,22 @@ describe("evidence-driven investigation through the AI SDK", () => {
 								},
 								execution,
 							);
-			await run();
+			const result = await run();
+			const steps = stage === "review" ? 5 : 6;
+			expect(h.requests).toHaveLength(steps);
+			expect(execution.recordUsage.mock.calls.map(([receipt]) => receipt.stepNumber)).toEqual(
+				Array.from({ length: steps }, (_, index) => index),
+			);
+			expect(result.usage).toEqual({
+				inputTokens: 100 * steps,
+				outputTokens: 10 * steps,
+				cacheTokens: 0,
+				costUsdMicros: 112.5 * steps,
+			});
+			const firstTools = z
+				.object({ tools: z.array(z.json()).optional() })
+				.parse(h.requests[0]).tools;
+			expect(firstTools === undefined).toBe(stage === "judge");
 			expect(reads.recordInvestigation).toHaveBeenCalledWith(
 				"review_transcript",
 				expect.any(String),

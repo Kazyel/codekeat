@@ -193,9 +193,32 @@ const WITHOUT_INLINE: ReviewInput = {
 
 describe("review evidence provenance through Google transport", () => {
 	it("repairs an unread citation by retrieving the missing source without restarting investigation", async () => {
-		const before = { ...HEAD, role: "before" as const, revision: "merge-base" };
+		const before = {
+			...HEAD,
+			path: "src/consumer.ts",
+			role: "before" as const,
+			revision: "merge-base",
+		};
 		const rejected: string[] = [];
 		const receipts: number[] = [];
+		const baseCatalog = catalog(CONTENT, rejected);
+		const consumer: ReviewSourceDocument = {
+			source: {
+				role: "before",
+				path: before.path,
+				revision: "merge-base",
+				repositoryFullName: INPUT.repositoryFullName,
+				contentHash: null,
+			},
+			content: "function consumer() {\n  return example();\n}\n",
+		};
+		const sources: ReviewSourceCatalog = {
+			...baseCatalog,
+			read: (request, signal) =>
+				request.source.path === before.path
+					? Promise.resolve(readReviewSourceRange(consumer, request.range))
+					: baseCatalog.read(request, signal),
+		};
 		const { model, requests } = harness([
 			call("source_read", {
 				source: { role: "head", path: PATH },
@@ -203,14 +226,14 @@ describe("review evidence provenance through Google transport", () => {
 			}),
 			output(conclusion(before, "candidate"), [FINDING]),
 			call("source_read", {
-				source: { role: "before", path: PATH },
+				source: { role: "before", path: before.path },
 				range: { kind: "lines", startLine: 1, lineCount: 3 },
 			}),
 			output(conclusion(before, "candidate"), [FINDING]),
 		]);
 		await expect(
 			model.review(MODEL, WITHOUT_INLINE, CHUNK, {
-				...execution(catalog(CONTENT, rejected)),
+				...execution(sources),
 				recordUsage: (receipt) => {
 					receipts.push(receipt.stepNumber);
 				},
@@ -299,7 +322,24 @@ describe("review evidence provenance through Google transport", () => {
 		expect(originals).toHaveLength(1);
 		expect(originals[0]?.response).toContain("original-source");
 		expect(requests[5]).toContain("archived_tool_result");
-		expect(requests[5]).not.toContain("original-source");
+		const continued = z
+			.object({
+				contents: z.array(
+					z.object({
+						parts: z.array(z.object({ functionResponse: z.json().optional() })),
+					}),
+				),
+			})
+			.parse(JSON.parse(requests[5]!));
+		expect(
+			JSON.stringify(
+				continued.contents.flatMap((entry) =>
+					entry.parts.flatMap((part) =>
+						part.functionResponse === undefined ? [] : [part.functionResponse],
+					),
+				),
+			),
+		).not.toContain("original-source");
 	});
 
 	it.each(["{not-json", JSON.stringify({ findings: [] })])(
@@ -520,13 +560,38 @@ describe("review evidence provenance through Google transport", () => {
 	);
 
 	it("does not turn manifest references into evidence of a read", async () => {
+		const sources = catalog();
+		const list = sources.list;
+		const manifestCatalog: ReviewSourceCatalog = {
+			...sources,
+			list: async (request, signal) => {
+				const page = await list(request, signal);
+				if (page.kind !== "page") return page;
+				return {
+					...page,
+					entries: [
+						...page.entries,
+						{
+							role: "head",
+							path: "src/unread-consumer.ts",
+							revision: INPUT.headSha,
+							repositoryFullName: INPUT.repositoryFullName,
+							contentHash: null,
+							kind: "file",
+							sizeBytes: 100,
+						},
+					],
+					totalEntries: page.totalEntries + 1,
+				};
+			},
+		};
 		const { model } = harness([
 			call("source_list", { role: "head", prefix: "", cursor: null, limit: 10 }),
-			output(conclusion(HEAD)),
-			output(conclusion(HEAD)),
+			output(conclusion({ ...HEAD, path: "src/unread-consumer.ts" })),
+			output(conclusion({ ...HEAD, path: "src/unread-consumer.ts" })),
 		]);
 		await expect(
-			model.review(MODEL, WITHOUT_INLINE, CHUNK, execution(catalog())),
+			model.review(MODEL, WITHOUT_INLINE, CHUNK, execution(manifestCatalog)),
 		).rejects.toMatchObject({ issue: "context_response_invalid" });
 	});
 
@@ -590,6 +655,49 @@ describe("review evidence provenance through Google transport", () => {
 		expect(requests[2]).toContain('"name":"source_read"');
 		expect(requests[2]).toContain("correction_required");
 		expect(requests[2]).toContain("evidence_not_delivered");
+	});
+
+	it("uses moderate reasoning only after a validated retrieval checkpoint and restores high for finalization", async () => {
+		const complete = conclusion(HEAD);
+		const incomplete: ReviewConclusion = {
+			status: "incomplete",
+			reviewedPaths: [PATH],
+			hypotheses: [
+				{
+					...complete.hypotheses[0]!,
+					outcome: "unresolved",
+					evidence: [],
+					missingEvidence: ["Read exact source"],
+				},
+			],
+			gaps: ["Read exact source"],
+		};
+		const { model, requests } = harness([
+			call("investigation_checkpoint", {
+				conclusion: incomplete,
+				nextTools: ["source_read"],
+			}),
+			call("source_read", {
+				source: { role: "head", path: PATH },
+				range: { kind: "lines", startLine: 1, lineCount: 3 },
+			}),
+			call("investigation_checkpoint", { conclusion: complete, nextTools: [] }),
+			output(complete),
+		]);
+		await model.review(MODEL, WITHOUT_INLINE, CHUNK, execution(catalog()));
+		const levels = requests.map(
+			(request) =>
+				z
+					.object({
+						generationConfig: z.object({
+							thinkingConfig: z.object({ thinkingLevel: z.string() }),
+						}),
+					})
+					.parse(JSON.parse(request)).generationConfig.thinkingConfig.thinkingLevel,
+		);
+		expect(levels).toEqual(["high", "medium", "medium", "high"]);
+		expect(requests[0]).toContain("Pacotes source_evidence");
+		expect(requests[0]).toContain("return 1;");
 	});
 
 	it("does not combine a financial path with a return added in another file", async () => {
