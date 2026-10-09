@@ -74,3 +74,10 @@ export type {
 	ReviewWorkQueue,
 } from "./types/review-run.types.js";
 export { formatReviewReport } from "./utils/review-report.util.js";
+export * from "./types/review-source.types.js";
+export * from "./types/review-metrics.types.js";
+export { ReviewSourceArtifactService } from "./services/review-source-artifact.service.js";
+export {
+	ReviewSourceCatalogService,
+	type ReviewSourceBackend,
+} from "./services/review-source-catalog.service.js";
