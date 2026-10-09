@@ -1,5 +1,6 @@
 import { Buffer } from "node:buffer";
 import { posix } from "node:path";
+import { Cache, Effect, Semaphore } from "effect";
 import { z } from "zod";
 
 import {
@@ -33,6 +34,18 @@ const DIRECTORY_SCHEMA = z.array(
 type DirectoryEntry = z.infer<typeof DIRECTORY_SCHEMA>[number];
 const BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 const TEXT_CONTROL_BYTES = new Set([9, 10, 13]);
+const CONTEXT_REQUEST_CONCURRENCY = 4;
+// Slots carry no repository data or credentials; authorization-dependent caches stay per invocation.
+const GLOBAL_CONTEXT_REQUESTS = Semaphore.makeUnsafe(16);
+type ContextRequestFailure = Exclude<ReviewContextFile, { readonly kind: "loaded" }>;
+interface DirectoryContext {
+	readonly entries: readonly DirectoryEntry[];
+	readonly failure: ContextRequestFailure | null;
+}
+interface DocumentationContext {
+	readonly paths: readonly string[];
+	readonly failures: readonly ContextRequestFailure[];
+}
 
 export type GitHubReviewContentLocation = {
 	readonly owner: string;
@@ -54,138 +67,210 @@ export async function loadGitHubReviewContext(
 	chunks: readonly ReviewInputChunk[],
 	signal: AbortSignal = new AbortController().signal,
 ): Promise<ReviewRepositoryContext> {
-	return new GitHubReviewContextLoader(source, repositoryFullName, revision, signal).load(chunks);
+	return Effect.runPromise(
+		new GitHubReviewContextLoader(source, repositoryFullName, revision, signal).load(chunks),
+		{ signal },
+	);
 }
 
 class GitHubReviewContextLoader {
-	private readonly files = new Map<string, ReviewContextFile>();
-	private readonly directories = new Map<string, readonly DirectoryEntry[]>();
+	private readonly files: Cache.Cache<string, ReviewContextFile>;
+	private readonly directories: Cache.Cache<string, DirectoryContext>;
+	private readonly requests = Semaphore.makeUnsafe(CONTEXT_REQUEST_CONCURRENCY);
 
 	constructor(
 		private readonly source: GitHubReviewContentSource,
 		private readonly repositoryFullName: string | null,
 		private readonly revision: string,
 		private readonly signal: AbortSignal,
-	) {}
-
-	async load(chunks: readonly ReviewInputChunk[]): Promise<ReviewRepositoryContext> {
-		const changedPaths = [
-			...new Set(chunks.flatMap((chunk) => [...chunk.changedLines.keys()])),
-		];
-		const documentation = await this.documentationPaths();
-		for (const path of [...documentation, ...changedPaths]) await this.loadFile(path);
-		for (const path of changedPaths) await this.loadSupportingFiles(path);
-		return {
-			repositoryFullName: this.repositoryFullName,
-			revision: this.revision,
-			files: [...this.files.values()],
-			omittedFileCount: 0,
-		};
-	}
-
-	private async documentationPaths(): Promise<readonly string[]> {
-		const paths = new Set(CONTEXT_DOCUMENT_PATHS);
-		const pending = [".codekeat"];
-		const visited = new Set<string>();
-		for (let cursor = 0; cursor < pending.length; cursor++) {
-			const directory = pending[cursor]!;
-			if (visited.has(directory)) continue;
-			visited.add(directory);
-			const entries = await this.listDirectory(directory);
-			pending.push(
-				...entries.filter((entry) => entry.type === "dir").map((entry) => entry.path),
-			);
-			for (const entry of entries.filter((entry) => entry.type === "file"))
-				paths.add(entry.path);
-		}
-		return [...paths];
-	}
-
-	private async loadSupportingFiles(path: string): Promise<void> {
-		const file = this.files.get(path);
-		if (file?.kind !== "loaded") return;
-		const candidates = reviewSupportingPathCandidates(path, file.content).filter(
-			(candidate) => !this.files.has(candidate),
+	) {
+		// One invocation owns both caches. No eviction or TTL can repeat a lookup mid-review.
+		this.files = Effect.runSync(
+			Cache.make({
+				capacity: Number.MAX_SAFE_INTEGER,
+				lookup: (path: string) => this.requestFile(path),
+			}),
 		);
-		for (const candidate of candidates) {
-			const entries = await this.listDirectory(posix.dirname(candidate));
-			if (entries.some((entry) => entry.type === "file" && entry.path === candidate))
-				await this.loadFile(candidate);
-		}
+		this.directories = Effect.runSync(
+			Cache.make({
+				capacity: Number.MAX_SAFE_INTEGER,
+				lookup: (path: string) => this.requestDirectory(path),
+			}),
+		);
 	}
 
-	private async listDirectory(path: string): Promise<readonly DirectoryEntry[]> {
-		const cached = this.directories.get(path);
-		if (cached !== undefined) return cached;
-		const entries = await this.requestDirectory(path);
-		this.directories.set(path, entries);
-		return entries;
+	load(chunks: readonly ReviewInputChunk[]): Effect.Effect<ReviewRepositoryContext> {
+		return Effect.gen({ self: this }, function* () {
+			const changedPaths = [
+				...new Set(chunks.flatMap((chunk) => [...chunk.changedLines.keys()])),
+			];
+			const documentation = yield* this.documentationPaths();
+			const paths = new Set([...documentation.paths, ...changedPaths]);
+			const files = yield* Effect.forEach(paths, (path) => Cache.get(this.files, path), {
+				concurrency: CONTEXT_REQUEST_CONCURRENCY,
+			});
+			const filesByPath = new Map(files.map((file) => [file.path, file]));
+			const supporting = yield* Effect.forEach(
+				changedPaths,
+				(path) => this.loadSupportingFiles(filesByPath.get(path)!, paths),
+				{ concurrency: CONTEXT_REQUEST_CONCURRENCY },
+			);
+			return {
+				repositoryFullName: this.repositoryFullName,
+				revision: this.revision,
+				files: [
+					...new Map(
+						[...documentation.failures, ...files, ...supporting.flat()].map((file) => [
+							file.path,
+							file,
+						]),
+					).values(),
+				],
+				omittedFileCount: 0,
+			};
+		});
 	}
 
-	private async requestDirectory(path: string): Promise<readonly DirectoryEntry[]> {
-		this.signal.throwIfAborted();
-		const location = this.location(path);
-		if (location === null) return [];
-		try {
-			const response = await this.source.getContent(location);
-			const parsed = DIRECTORY_SCHEMA.safeParse(response.data);
-			if (!parsed.success) {
-				this.files.set(path, invalidContextFile(path));
-				return [];
+	private documentationPaths(): Effect.Effect<DocumentationContext> {
+		return Effect.gen({ self: this }, function* () {
+			const paths = new Set(CONTEXT_DOCUMENT_PATHS);
+			const failures: ContextRequestFailure[] = [];
+			let pending = [".codekeat"];
+			const visited = new Set<string>();
+			while (pending.length > 0) {
+				const directories = [...new Set(pending)].filter((path) => !visited.has(path));
+				directories.forEach((path) => visited.add(path));
+				const groups = yield* Effect.forEach(
+					directories,
+					(path) => Cache.get(this.directories, path),
+					{
+						concurrency: CONTEXT_REQUEST_CONCURRENCY,
+					},
+				);
+				for (const group of groups) {
+					if (group.failure !== null) failures.push(group.failure);
+					for (const entry of group.entries.filter((entry) => entry.type === "file"))
+						paths.add(entry.path);
+				}
+				pending = groups.flatMap((group) =>
+					group.entries
+						.filter((entry) => entry.type === "dir")
+						.map((entry) => entry.path),
+				);
 			}
-			return parsed.data.filter((entry) => validDirectoryChild(path, entry));
-		} catch (error) {
-			this.signal.throwIfAborted();
-			const failure = contextRequestFailure(error, path);
-			if (failure.kind !== "missing") this.files.set(path, failure);
-			return [];
-		}
+			return { paths: [...paths], failures };
+		});
 	}
 
-	private async loadFile(path: string): Promise<void> {
-		if (!this.files.has(path)) this.files.set(path, await this.requestFile(path));
+	private loadSupportingFiles(
+		file: ReviewContextFile,
+		loadedPaths: ReadonlySet<string>,
+	): Effect.Effect<readonly ReviewContextFile[]> {
+		if (file.kind !== "loaded") return Effect.succeed([]);
+		const candidates = reviewSupportingPathCandidates(file.path, file.content).filter(
+			(candidate) => !loadedPaths.has(candidate),
+		);
+		return Effect.forEach(candidates, (path) => this.supportingFile(path), {
+			concurrency: CONTEXT_REQUEST_CONCURRENCY,
+		}).pipe(Effect.map((groups) => groups.flat()));
 	}
 
-	private async requestFile(path: string): Promise<ReviewContextFile> {
-		this.signal.throwIfAborted();
+	private supportingFile(path: string): Effect.Effect<readonly ReviewContextFile[]> {
+		return Cache.get(this.directories, posix.dirname(path)).pipe(
+			Effect.flatMap((directory) => {
+				if (directory.failure !== null) return Effect.succeed([directory.failure]);
+				if (
+					!directory.entries.some((entry) => entry.type === "file" && entry.path === path)
+				)
+					return Effect.succeed([]);
+				return Cache.get(this.files, path).pipe(Effect.map((file) => [file]));
+			}),
+		);
+	}
+
+	private requestDirectory(path: string): Effect.Effect<DirectoryContext> {
+		const location = this.location(path);
+		if (location === null) return Effect.succeed({ entries: [], failure: null });
+		return this.request(location).pipe(
+			Effect.map((data) => directoryContext(path, data)),
+			Effect.catch((failure) =>
+				Effect.succeed({
+					entries: [],
+					failure: failure.kind === "missing" ? null : failure,
+				}),
+			),
+		);
+	}
+
+	private requestFile(path: string): Effect.Effect<ReviewContextFile> {
 		const location = this.location(path);
 		if (location === null)
-			return { kind: "unavailable", path, reason: "head_repository_unavailable" };
-		try {
-			const response = await this.source.getContent(location);
-			return await this.parseFileData(response.data, location);
-		} catch (error) {
-			this.signal.throwIfAborted();
-			return contextRequestFailure(error, path);
-		}
+			return Effect.succeed({
+				kind: "unavailable",
+				path,
+				reason: "head_repository_unavailable",
+			});
+		return this.request(location).pipe(
+			Effect.flatMap((data) => this.parseFileData(data, location)),
+			Effect.catch((failure) => Effect.succeed(failure)),
+		);
 	}
 
-	private async parseFileData(
-		data: unknown,
+	private parseFileData(
+		data: z.JSONType,
 		location: GitHubReviewContentLocation,
-	): Promise<ReviewContextFile> {
+	): Effect.Effect<ReviewContextFile, ContextRequestFailure> {
 		const parsed = FILE_CONTENT_SCHEMA.safeParse(data);
-		if (!parsed.success) return invalidContextFile(location.path);
+		if (!parsed.success) return Effect.succeed(invalidContextFile(location.path));
 		const content =
 			parsed.data.encoding === "none"
-				? await this.readRawFile(location, parsed.data.size)
-				: decodeTextContent(parsed.data.content, parsed.data.size);
-		return content === null
-			? invalidContextFile(location.path)
-			: { kind: "loaded", path: location.path, content };
+				? this.readRawFile(location, parsed.data.size)
+				: Effect.succeed(decodeTextContent(parsed.data.content, parsed.data.size));
+		return content.pipe(Effect.map((value) => loadedContextFile(location.path, value)));
 	}
 
-	private async readRawFile(
+	private readRawFile(
 		location: GitHubReviewContentLocation,
 		size: number,
-	): Promise<string | null> {
-		const response = await this.source.getContent({
+	): Effect.Effect<string | null, ContextRequestFailure> {
+		return this.request({
 			...location,
 			headers: { accept: "application/vnd.github.raw+json" },
-		});
-		const content = z.string().safeParse(response.data);
-		if (!content.success) return null;
-		return validRawText(content.data, size) ? content.data : null;
+		}).pipe(
+			Effect.map((data) => {
+				const content = z.string().safeParse(data);
+				if (!content.success) return null;
+				return validRawText(content.data, size) ? content.data : null;
+			}),
+		);
+	}
+
+	private request(
+		location: GitHubReviewContentLocation,
+	): Effect.Effect<z.JSONType, ContextRequestFailure> {
+		// Every actual HTTP request, including raw media and directory reads, shares four permits.
+		return this.requests.withPermit(
+			GLOBAL_CONTEXT_REQUESTS.withPermit(
+				Effect.tryPromise({
+					try: async (signal) => {
+						this.signal.throwIfAborted();
+						const response = await this.source.getContent({
+							...location,
+							request: { signal: AbortSignal.any([signal, this.signal]) },
+						});
+						return response.data;
+					},
+					catch: (error) => contextRequestFailure(error, location.path),
+				}).pipe(
+					Effect.flatMap((data) => {
+						const parsed = z.json().safeParse(data);
+						return parsed.success
+							? Effect.succeed(parsed.data)
+							: Effect.fail(invalidContextFile(location.path));
+					}),
+				),
+			),
+		);
 	}
 
 	private location(path: string): GitHubReviewContentLocation | null {
@@ -210,11 +295,24 @@ function validDirectoryChild(directory: string, entry: DirectoryEntry): boolean 
 	);
 }
 
-function invalidContextFile(path: string): ReviewContextFile {
+function directoryContext(path: string, data: z.JSONType): DirectoryContext {
+	const parsed = DIRECTORY_SCHEMA.safeParse(data);
+	if (!parsed.success) return { entries: [], failure: invalidContextFile(path) };
+	return {
+		entries: parsed.data.filter((entry) => validDirectoryChild(path, entry)),
+		failure: null,
+	};
+}
+
+function loadedContextFile(path: string, content: string | null): ReviewContextFile {
+	return content === null ? invalidContextFile(path) : { kind: "loaded", path, content };
+}
+
+function invalidContextFile(path: string): ContextRequestFailure {
 	return { kind: "unavailable", path, reason: "invalid_response" };
 }
 
-function contextRequestFailure(error: unknown, path: string): ReviewContextFile {
+function contextRequestFailure(error: unknown, path: string): ContextRequestFailure {
 	if (typeof error === "object" && error !== null && "status" in error && error.status === 404)
 		return { kind: "missing", path };
 	return { kind: "unavailable", path, reason: "request_failed" };
