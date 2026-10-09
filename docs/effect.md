@@ -11,6 +11,7 @@ limites de integração. Programas internos que já usam Effect compõem Effects
 | Etapas dependentes com falhas esperadas       | `Effect.gen`, `Data.TaggedError`, `Effect.result`    | `ReviewRunProcessorService`             |
 | Chunks ou lotes que param na primeira falha   | `Effect.forEach` com concorrência explícita          | Geração e julgamento no processor       |
 | Fontes GitHub independentes ou compartilhadas | `Effect.forEach`, `Cache` por execução e `Semaphore` | Carregador do contexto do repositório   |
+| Busca e pacotes de investigação               | `Cache.makeWith`, concorrência limitada e prazo      | `ReviewEvidenceRetrievalService`        |
 | Acesso exclusivo ao orçamento de evidências   | `Semaphore.withPermit`                               | `ReviewContextTool`                     |
 | Token com TTL e consultas concorrentes        | `Cache.makeWith` e invalidação condicional           | `TakeatMcpAccessTokenService`           |
 | Capacidade real de um modelo                  | `Cache.makeWith`, prazo e falha tipada               | Preflight Google sobre o request do SDK |
@@ -87,8 +88,9 @@ Referências: [recursos](https://effect.website/docs/v4/resource-management/intr
 
 Use `Cache` para dados com TTL e lookup compartilhado. Use `Semaphore` para acesso limitado a um
 recurso. O contexto GitHub usa quatro permits por carregamento e dezesseis compartilhados no processo.
-Os caches de arquivos e diretórios pertencem somente à execução; não expiram nem removem entradas
-durante ela. Isso deduplica leituras em andamento sem conservar permissões ou conteúdo entre runs. O registro de ferramentas possui um permit por tentativa, garantindo execução e contabilização
+Os caches de arquivos e diretórios pertencem somente à execução. Sucessos permanecem durante ela;
+falhas têm TTL zero para permitir uma nova tentativa após indisponibilidade transitória. Isso
+deduplica leituras em andamento sem conservar permissões ou conteúdo entre runs. O registro de ferramentas possui um permit por tentativa, garantindo execução e contabilização
 sequenciais mesmo quando o AI SDK solicita chamadas concorrentes.
 
 Teste comportamentos de tempo com `TestClock.layer()`. Inicie a operação em uma fiber filha, avance
@@ -112,6 +114,14 @@ Logs Pino mantêm códigos, IDs e duração. A tabela privada de telemetria cons
 operacionais para consultas autenticadas e não contém o conteúdo das fontes. `Effect.onExit` registra duração e resultado de cada
 etapa do processor também em falha ou interrupção, sem registrar as fontes. Spans de tracing precisam de um exporter configurado para
 produzir observabilidade fora do processo.
+
+A recuperação de evidências avança cursores sequencialmente no host e lê documentos independentes
+com concorrência quatro. Buscas completas usam um cache por catálogo autorizado; falhas e páginas
+parciais têm TTL zero, e buscas sobre artefatos mutáveis de investigação ignoram o cache. O prazo de
+dez segundos devolve progresso parcial com continuação e interrompe o I/O. Pacotes de evidências
+compõem leituras independentes com `Effect.all` e conservam referências das fontes ainda pendentes.
+O avaliador isolado usa finalizadores e snapshots de resultados para registrar o uso já recebido
+também em cancelamento, sem publicar relatórios no GitHub.
 
 Referências: [Semaphore](https://effect.website/docs/v4/concurrency/semaphore),
 [TestClock](https://effect.website/docs/v4/testing/testclock),
