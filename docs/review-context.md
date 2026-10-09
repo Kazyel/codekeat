@@ -17,7 +17,10 @@ O carregamento inicial prioriza estes documentos, nesta ordem:
 
 O carregador descobre também arquivos e subdiretórios de `.codekeat/`, validando as entradas retornadas
 pelo GitHub. Ele lê o conteúdo textual completo e ignora links simbólicos, submódulos e caminhos que
-escapem do diretório solicitado. Diretórios já consultados não são visitados novamente.
+escapem do diretório solicitado. Diretórios já consultados não são visitados novamente. Leituras independentes usam até quatro
+requests simultâneos por carregamento e até dezesseis no processo. Arquivos e diretórios consultados
+concorrentemente compartilham o mesmo lookup daquela execução. A ordem das fontes independe da ordem
+das respostas, e cancelamento interrompe o I/O ativo e as leituras ainda enfileiradas.
 
 Os documentos são opcionais. O carregamento registra arquivos ausentes e não substitui seu conteúdo
 por documentos de outra revisão. Referências em documentação não concedem acesso a outros repositórios.
@@ -54,11 +57,16 @@ repositório e revisão. Isso permite recuperar contexto relevante sem repetir t
 todas as chamadas. As regras de revisão ficam no system prompt; os textos externos ficam nos dados.
 O pacote inclui relações de imports e testes entre as fontes já carregadas nos dois sentidos. Assim,
 um chamador disponível acompanha a função alterada, independentemente da ordem dos arquivos. Uma
-fila com caminhos visitados percorre esse grafo em tempo linear, sem novas leituras remotas.
+fila com caminhos visitados identifica os componentes desse grafo uma vez por snapshot, em tempo
+linear. Gerador e juiz reutilizam o índice e o manifesto, sem novas leituras remotas.
 
 A janela do modelo continua finita. A integração consulta os limites reais do modelo e conta os tokens
 do request serializado, incluindo instruções, ferramentas e histórico. Capacidade insuficiente é uma
 falha explícita; ela não autoriza cortar uma fonte ou apresentar uma análise parcial como concluída.
+Contagens de requests idênticos compartilham um cache Effect por guard autenticado, com até 256
+entradas e TTL de dez minutos. A chave é o hash do request completo e do modelo. O cache conserva
+somente hash e contagem; falhas expiram imediatamente. A capacidade do modelo continua sendo
+verificada em cada chamada, e gerações e consumo faturado não entram nesse cache.
 
 ## Investigação pelo MCP
 
@@ -107,11 +115,15 @@ descrito em [Eficiência e inteligência dos reviews](roadmap/review-efficiency-
 
 `GitHubReviewInputService` entrega um `ReviewInput` com `baseSha` e `repositoryContext`. O carregador
 GitHub valida arquivos e diretórios externos, lê fontes completas e mantém o SHA. Uma segunda leitura do PR rejeita mudanças
-de head ou base durante a obtenção do diff, antes de carregar contexto.
+de head ou base durante a obtenção do diff, antes de carregar contexto. O conjunto de paths recebido
+precisa corresponder ao número de arquivos informado pelo PR. Diferença ou diff vazio inesperado
+encerra o carregamento com `github_diff_unavailable`. Essa conferência detecta blocos ausentes; ela
+não comprova que o transporte entregou todas as linhas de cada bloco.
 
 `GeminiReviewService.review` cria um registro de ferramentas por tentativa e devolve a investigação
 junto dos findings. O processor associa esse registro às evidências do chunk. O juiz recebe o mesmo
-contexto inicial e os registros correspondentes ao lote. Esse estado não é compartilhado entre PRs.
+contexto inicial e os registros correspondentes ao lote. Esse estado não é compartilhado entre PRs. O índice usa uma chave fraca para acompanhar o ciclo de
+vida do snapshot, sem conservar fontes depois que seu dono é liberado.
 
 O AI SDK representa falhas de execução como `tool-error`. O registro conserva a primeira falha
 para interromper novas etapas e acionar o fallback somente quando o MCP estiver indisponível.
@@ -125,3 +137,15 @@ distinta antes dos findings, mas acrescentaria chamada, contrato de saída e cus
 GitHub fornece contexto antes da geração sem essa etapa. Chamadas MCP determinísticas foram
 descartadas porque os parâmetros e recursos de revisão pertencem ao catálogo do servidor, não ao
 Codekeat. A investigação adicional permanece uma decisão do modelo.
+
+## Medição e evolução de escala
+
+O processor registra duração e resultado de carregamento, geração de candidatos e julgamento em
+`review_run.stage_finished`, inclusive quando uma etapa falha ou é interrompida. Os logs contêm ID,
+etapa, duração e resultado, sem código, descrição ou respostas privadas. São eventos de diagnóstico;
+o dashboard ainda agrega a duração total do run.
+
+A [pesquisa de escala](roadmap/review-context-scale-research.md) compara execução com cobertura
+persistida e recuperação de fontes sob demanda. A rodada atual remove trabalho repetido sem mudar
+a seleção do contexto. Catálogo completo, segmentação de fontes, cobertura persistida e retomada
+continuam necessários para processar volumes que excedam a memória, a janela ou o prazo atual.

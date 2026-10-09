@@ -6,17 +6,18 @@ limites de integração. Programas internos que já usam Effect compõem Effects
 
 ## Escolha por problema
 
-| Problema                                     | Padrão                                            | Implementação no Codekeat               |
-| -------------------------------------------- | ------------------------------------------------- | --------------------------------------- |
-| Etapas dependentes com falhas esperadas      | `Effect.gen`, `Data.TaggedError`, `Effect.result` | `ReviewRunProcessorService`             |
-| Chunks ou lotes que param na primeira falha  | `Effect.forEach` com concorrência explícita       | Geração e julgamento no processor       |
-| Acesso exclusivo ao orçamento de evidências  | `Semaphore.withPermit`                            | `ReviewContextTool`                     |
-| Token com TTL e consultas concorrentes       | `Cache.makeWith` e invalidação condicional        | `TakeatMcpAccessTokenService`           |
-| Capacidade real de um modelo                 | `Cache.makeWith`, prazo e falha tipada            | Preflight Google sobre o request do SDK |
-| Conexão ou requisição que precisa de cleanup | `Effect.acquireUseRelease` e `Effect.ensuring`    | Sessões MCP e requisição OAuth          |
-| Prazo de operação com cancelamento de I/O    | `Effect.timeoutOrElse` e `AbortSignal`            | OAuth, MCP e finalizadores              |
-| Recuperação de uma falha específica          | `Effect.catchTag` ou `Effect.catchIf`             | Renovação de autenticação MCP           |
-| Expiração ou timeout em testes               | `TestClock` e fibers em escopo                    | Testes do cache OAuth                   |
+| Problema                                      | Padrão                                               | Implementação no Codekeat               |
+| --------------------------------------------- | ---------------------------------------------------- | --------------------------------------- |
+| Etapas dependentes com falhas esperadas       | `Effect.gen`, `Data.TaggedError`, `Effect.result`    | `ReviewRunProcessorService`             |
+| Chunks ou lotes que param na primeira falha   | `Effect.forEach` com concorrência explícita          | Geração e julgamento no processor       |
+| Fontes GitHub independentes ou compartilhadas | `Effect.forEach`, `Cache` por execução e `Semaphore` | Carregador do contexto do repositório   |
+| Acesso exclusivo ao orçamento de evidências   | `Semaphore.withPermit`                               | `ReviewContextTool`                     |
+| Token com TTL e consultas concorrentes        | `Cache.makeWith` e invalidação condicional           | `TakeatMcpAccessTokenService`           |
+| Capacidade real de um modelo                  | `Cache.makeWith`, prazo e falha tipada               | Preflight Google sobre o request do SDK |
+| Conexão ou requisição que precisa de cleanup  | `Effect.acquireUseRelease` e `Effect.ensuring`       | Sessões MCP e requisição OAuth          |
+| Prazo de operação com cancelamento de I/O     | `Effect.timeoutOrElse` e `AbortSignal`               | OAuth, MCP e finalizadores              |
+| Recuperação de uma falha específica           | `Effect.catchTag` ou `Effect.catchIf`                | Renovação de autenticação MCP           |
+| Expiração ou timeout em testes                | `TestClock` e fibers em escopo                       | Testes do cache OAuth                   |
 
 Funções puras continuam funções TypeScript. Schemas Zod permanecem a fonte de validação dos contratos
 externos, inclusive para `Output.object` do AI SDK.
@@ -58,7 +59,9 @@ original nem provocar renovação de credenciais.
 Cada tentativa de geração ou julgamento tem prazo total de cinco minutos. O processor limita o run
 inteiro a trinta minutos, incluindo o carregamento de contexto. Os sinais propagam interrupção para
 GitHub, Google e ferramentas MCP. Consultas de metadata e contagem de tokens têm prazo de dez segundos;
-metadata válida fica no cache por uma hora. A espera por sincronização da Installation tem prazo próprio
+metadata válida fica no cache por uma hora. Contagens idênticas usam um cache de 256 entradas
+com TTL de dez minutos e falhas com TTL zero. Um serviço privado fornece o body apenas ao lookup;
+as entradas prontas conservam hash e contagem, sem reter o contexto da requisição. A espera por sincronização da Installation tem prazo próprio
 de dez segundos e não cancela um inventário compartilhado com outros eventos.
 
 O registro de consumo recebe cada resposta do provider antes de executar ferramentas ou validar a
@@ -79,7 +82,9 @@ Referências: [recursos](https://effect.website/docs/v4/resource-management/intr
 ## Estado, testes e runtime
 
 Use `Cache` para dados com TTL e lookup compartilhado. Use `Semaphore` para acesso limitado a um
-recurso. O registro de ferramentas possui um permit por tentativa, garantindo execução e contabilização
+recurso. O contexto GitHub usa quatro permits por carregamento e dezesseis compartilhados no processo.
+Os caches de arquivos e diretórios pertencem somente à execução; não expiram nem removem entradas
+durante ela. Isso deduplica leituras em andamento sem conservar permissões ou conteúdo entre runs. O registro de ferramentas possui um permit por tentativa, garantindo execução e contabilização
 sequenciais mesmo quando o AI SDK solicita chamadas concorrentes.
 
 Teste comportamentos de tempo com `TestClock.layer()`. Inicie a operação em uma fiber filha, avance
@@ -95,7 +100,8 @@ e recuperação dos runs em andamento. PQueue limita os runs simultâneos por `R
 com padrão de cinco, enquanto cada pipeline permanece sequencial. Publicações usam outra fila serial.
 As filas continuam sem recuperação após reinício.
 Uma porta Promise que recebe cancelamento precisa propagá-lo até a requisição e a leitura do corpo.
-Logs Pino mantêm códigos, IDs e duração. Spans de tracing precisam de um exporter configurado para
+Logs Pino mantêm códigos, IDs e duração. `Effect.onExit` registra duração e resultado de cada
+etapa do processor também em falha ou interrupção, sem registrar as fontes. Spans de tracing precisam de um exporter configurado para
 produzir observabilidade fora do processo.
 
 Referências: [Semaphore](https://effect.website/docs/v4/concurrency/semaphore),

@@ -13,7 +13,9 @@ Os sinais abaixo medem concordância do juiz. Eles não representam precisão ou
 | `judge-gate-v1`         | Implementada no histórico de evolução | Juiz online, fail-closed, com persistência de todos os candidatos                                |
 | `adjacent-context-v2`   | Implementada no histórico de evolução | Até 4.000 caracteres de contexto do chunk anterior e posterior                                   |
 | `compact-judge-v3`      | Implementada no histórico de evolução | Evidência por hunk e lotes de até 80.000 caracteres ou 50 findings                               |
-| `repository-context-v4` | Estratégia ativa                      | Documentos e código no SHA do PR, intenção da mudança e evidências MCP compartilhadas com o juiz |
+| `repository-context-v4` | Implementada no histórico de evolução | Documentos e código no SHA do PR, intenção da mudança e evidências MCP compartilhadas com o juiz |
+
+| `repository-context-v5` | Estratégia ativa | Fontes sem cortes, capacidade real, juiz adaptativo e uso conhecido conservado em falhas e retries |
 
 A aplicação grava a estratégia em cada `review_run`. Runs históricos mantêm a estratégia nula, `judgeVerdict = not_evaluated` e seus findings publicados.
 
@@ -21,10 +23,11 @@ A aplicação grava a estratégia em cada `review_run`. Runs históricos mantêm
 
 O processor valida e deduplica os findings antes do julgamento. Cada candidato referencia uma evidência extraída do hunk que contém sua linha. A resposta precisa cobrir todos os índices uma vez, sem índices repetidos ou fora do lote.
 
-Na estratégia `repository-context-v4`, o juiz também recebe o contexto carregado pelo GitHub e as
+Na estratégia ativa `repository-context-v5`, o juiz também recebe o contexto carregado pelo GitHub e as
 consultas MCP associadas ao chunk. Esses dados ajudam a avaliar alcance e impacto, mas não autorizam
-findings fora das linhas adicionadas. O tamanho dos lotes considera as consultas registradas junto das
-evidências. Consulte [Contexto de revisão](../review-context.md) para limites e proveniência.
+findings fora das linhas adicionadas. Os lotes aceitam até 50 candidatos, sem corte de caracteres. Se a contagem real de tokens exceder
+a janela, o processor divide o conjunto entre candidatos inteiros; uma evidência indivisível falha
+explicitamente. Consulte [Contexto de revisão](../review-context.md) para limites e proveniência.
 
 - `approved`: mantém a severidade e publica o finding.
 - `severity_changed`: exige uma severidade diferente e publica o finding corrigido.
