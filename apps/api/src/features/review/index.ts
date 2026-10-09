@@ -4,12 +4,19 @@ export {
 	createReviewUsageController,
 } from "./controllers/review-read.controller.js";
 export {
+	ReviewContextCapacityExceeded,
 	ReviewModelResponseError,
 	type ReviewModelResponseIssue,
 } from "./errors/review-model.error.js";
 export { ReviewQueryRepository } from "./repositories/review-query.repository.js";
 export { ReviewReportRepository } from "./repositories/review-report.repository.js";
 export { ReviewRunRepository } from "./repositories/review-run.repository.js";
+export {
+	decodeGitDiffPath,
+	isRepositoryPath,
+	reviewSupportingPathCandidates,
+} from "./utils/review-source-paths.util.js";
+export { calculateReviewTokenCost } from "./utils/review-token-cost.util.js";
 export { requestReview } from "./services/request-review.service.js";
 export { ReviewQueueService } from "./services/review-queue.service.js";
 export { ReviewReportPublisherService } from "./services/review-report-publisher.service.js";
@@ -32,6 +39,8 @@ export type {
 	ReviewInputSource,
 	ReviewModel,
 	ReviewModelResult,
+	ReviewExecution,
+	ReviewUsageEvent,
 	ReviewTokenUsage,
 } from "./types/review-input.types.js";
 export type { ReviewReportPublisherClient } from "./types/review-publication.types.js";
@@ -44,6 +53,7 @@ export type {
 	ReviewQualitySummary,
 	ReviewRunCompletion,
 	ReviewRunErrorCode,
+	ReviewRunFailureStatistics,
 	ReviewRunInput,
 	ReviewRunSummary,
 	ReviewUsageGroup,

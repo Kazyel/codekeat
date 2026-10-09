@@ -10,3 +10,11 @@ export class ReviewModelResponseError extends Error {
 		super("The review model returned an invalid response.");
 	}
 }
+import { Data } from "effect";
+
+export class ReviewContextCapacityExceeded extends Data.TaggedError(
+	"ReviewContextCapacityExceeded",
+)<{
+	readonly inputTokens: number;
+	readonly inputTokenLimit: number;
+}> {}

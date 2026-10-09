@@ -4,7 +4,6 @@ import type { ReviewFinding, ReviewRunIgnoreReason } from "./review-run.types.js
 
 export type ReviewContextFile =
 	| { readonly kind: "loaded"; readonly path: string; readonly content: string }
-	| { readonly kind: "truncated"; readonly path: string; readonly content: string }
 	| { readonly kind: "missing"; readonly path: string }
 	| {
 			readonly kind: "unavailable";
@@ -58,6 +57,18 @@ export interface ReviewTokenUsage {
 	readonly costUsdMicros: number;
 }
 
+export interface ReviewUsageEvent {
+	readonly stage: "review" | "judge";
+	readonly callId: string;
+	readonly stepNumber: number;
+	readonly usage: ReviewTokenUsage;
+}
+
+export interface ReviewExecution {
+	readonly signal: AbortSignal;
+	readonly recordUsage: (event: ReviewUsageEvent) => void;
+}
+
 export interface ReviewModelResult {
 	readonly findings: readonly ReviewFinding[];
 	readonly investigation: ReviewInvestigation;
@@ -106,6 +117,7 @@ export interface ReviewFindingJudge {
 		model: ReviewModelConfiguration,
 		input: ReviewInput,
 		batch: ReviewFindingJudgeInput,
+		execution: ReviewExecution,
 	): Promise<ReviewFindingJudgmentResult>;
 }
 
@@ -115,7 +127,7 @@ export type ReviewInputLoadResult =
 	| { readonly kind: "ready"; readonly input: ReviewInput };
 
 export interface ReviewInputSource {
-	load(run: RunnableReviewRun): Promise<ReviewInputLoadResult>;
+	load(run: RunnableReviewRun, signal: AbortSignal): Promise<ReviewInputLoadResult>;
 }
 
 export interface ReviewModel {
@@ -123,5 +135,6 @@ export interface ReviewModel {
 		model: ReviewModelConfiguration,
 		input: ReviewInput,
 		chunk: ReviewInputChunk,
+		execution: ReviewExecution,
 	): Promise<ReviewModelResult>;
 }

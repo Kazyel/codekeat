@@ -9,6 +9,8 @@ import type {
 } from "./review-run.types.js";
 
 export type ReviewRunErrorCode =
+	| "review_run_timeout"
+	| "review_context_capacity_exceeded"
 	| "finding_location_invalid"
 	| "gemini_invalid_response"
 	| "gemini_judge_invalid_response"
@@ -70,6 +72,7 @@ export interface ReviewReportComment {
 
 export interface PublishableReviewReport {
 	readonly reportId: string;
+	readonly githubCommentId: number | null;
 	readonly reviewRunId: string;
 	readonly githubInstallationId: number;
 	readonly repositoryOwner: string;
@@ -87,6 +90,13 @@ export interface ReviewRunCompletion {
 	readonly reviewStrategyVersion: string;
 	readonly changedLineCount: number;
 	readonly reviewChunkCount: number;
+	readonly judgeCallCount: number;
+	readonly processingDurationMs: number;
+}
+
+export interface ReviewRunFailureStatistics {
+	readonly reviewUsage: ReviewTokenUsage | null;
+	readonly judgeUsage: ReviewTokenUsage | null;
 	readonly judgeCallCount: number;
 	readonly processingDurationMs: number;
 }
