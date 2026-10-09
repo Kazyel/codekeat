@@ -1,4 +1,5 @@
-import { Cache, Data, Effect, Exit } from "effect";
+import { createHash } from "node:crypto";
+import { Cache, Context, Data, Effect, Exit } from "effect";
 import { z } from "zod";
 
 const REQUEST_TIMEOUT_MS = 10_000;
@@ -13,6 +14,11 @@ export { ReviewContextCapacityExceeded } from "#features/review";
 class GoogleContextCapacityUnavailable extends Data.TaggedError(
 	"GoogleContextCapacityUnavailable",
 ) {}
+
+class TokenCountRequest extends Context.Service<
+	TokenCountRequest,
+	{ readonly model: string; readonly body: string }
+>()("codekeat/GoogleTokenCountRequest") {}
 
 /** Preflight the actual SDK wire request, including tool schemas and conversation history. */
 export function createGoogleContextCapacityFetch(
@@ -33,6 +39,12 @@ export function createGoogleContextCapacityFetch(
 
 class GoogleContextCapacityService {
 	private readonly capacities: Cache.Cache<string, number, GoogleContextCapacityUnavailable>;
+	private readonly counts: Cache.Cache<
+		string,
+		number,
+		GoogleContextCapacityUnavailable,
+		TokenCountRequest
+	>;
 	constructor(
 		private readonly fetcher: typeof fetch,
 		private readonly apiKey: string,
@@ -43,6 +55,13 @@ class GoogleContextCapacityService {
 				timeToLive: (exit) => (Exit.isSuccess(exit) ? "1 hour" : 0),
 			}),
 		);
+		this.counts = Effect.runSync(
+			Cache.makeWith(() => this.readCount(), {
+				capacity: 256,
+				timeToLive: (exit) => (Exit.isSuccess(exit) ? "10 minutes" : 0),
+				requireServicesAt: "lookup",
+			}),
+		);
 	}
 
 	check(
@@ -51,19 +70,36 @@ class GoogleContextCapacityService {
 	): Effect.Effect<void, GoogleContextCapacityUnavailable | ReviewContextCapacityExceeded> {
 		return Effect.gen({ self: this }, function* () {
 			const inputTokenLimit = yield* Cache.get(this.capacities, model);
-			const response = yield* this.request(`${model}:countTokens`, {
+			const countBody = JSON.stringify({
 				generateContentRequest: { ...body, model },
 			});
-			const count = COUNT_SCHEMA.safeParse(response);
-			if (!count.success) return yield* Effect.fail(new GoogleContextCapacityUnavailable());
-			if (count.data.totalTokens > inputTokenLimit) {
+			// Retain only the digest and count; the full payload belongs to the lookup fiber.
+			const key = createHash("sha256").update(countBody).digest("hex");
+			const inputTokens = yield* Cache.get(this.counts, key).pipe(
+				Effect.provideService(TokenCountRequest, { model, body: countBody }),
+			);
+			if (inputTokens > inputTokenLimit) {
 				return yield* Effect.fail(
 					new ReviewContextCapacityExceeded({
-						inputTokens: count.data.totalTokens,
+						inputTokens,
 						inputTokenLimit,
 					}),
 				);
 			}
+		});
+	}
+
+	private readCount(): Effect.Effect<
+		number,
+		GoogleContextCapacityUnavailable,
+		TokenCountRequest
+	> {
+		return Effect.gen({ self: this }, function* () {
+			const request = yield* TokenCountRequest;
+			const response = yield* this.request(`${request.model}:countTokens`, request.body);
+			const count = COUNT_SCHEMA.safeParse(response);
+			if (!count.success) return yield* Effect.fail(new GoogleContextCapacityUnavailable());
+			return count.data.totalTokens;
 		});
 	}
 
@@ -80,7 +116,7 @@ class GoogleContextCapacityService {
 
 	private request(
 		path: string,
-		body?: { readonly generateContentRequest: GenerationBody & { readonly model: string } },
+		body?: string,
 	): Effect.Effect<z.JSONType, GoogleContextCapacityUnavailable> {
 		return Effect.tryPromise({
 			try: async (signal) => {
@@ -92,7 +128,7 @@ class GoogleContextCapacityService {
 							"x-goog-api-key": this.apiKey,
 							"Content-Type": "application/json",
 						},
-						...(body === undefined ? {} : { body: JSON.stringify(body) }),
+						...(body === undefined ? {} : { body }),
 						signal,
 					},
 				);
