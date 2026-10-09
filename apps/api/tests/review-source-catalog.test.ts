@@ -3,7 +3,7 @@ import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promise
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Effect } from "effect";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ReviewSourceArtifactService } from "../src/features/review/services/review-source-artifact.service.js";
 import {
@@ -37,6 +37,115 @@ afterEach(async () => {
 });
 
 describe("Review source catalog", () => {
+	it("returns an available match and cancels speculative reads without waiting for an unrelated stalled document", async () => {
+		const documents = Array.from({ length: 4 }, (_, index) =>
+			sourceDocument("head", `src/${index}.ts`, "needle"),
+		);
+		const aborted: string[] = [];
+		const firstRead = Promise.withResolvers<ReviewSourceDocument>();
+		let stalledReads = 0;
+		const backend: ReviewSourceBackend = {
+			entries: () =>
+				Effect.succeed(
+					documents.map((document) => ({
+						...document.source,
+						kind: "file",
+						sizeBytes: 6,
+					})),
+				),
+			document: (identity) =>
+				identity.path === "src/0.ts"
+					? Effect.promise(() => firstRead.promise)
+					: Effect.promise(
+							(signal) =>
+								new Promise<ReviewSourceDocument>((_resolve, reject) => {
+									stalledReads++;
+									signal.addEventListener(
+										"abort",
+										() => {
+											aborted.push(identity.path);
+											reject(new Error("Aborted"));
+										},
+										{ once: true },
+									);
+								}),
+						),
+		};
+		const catalog = new ReviewSourceCatalogService(
+			[revision],
+			backend,
+			new ReviewSourceArtifactService(await artifactDirectory(), "cancel-prefetch"),
+			[],
+		);
+		const pending = catalog.search(
+			{ ...contentSearchRequest("needle"), limit: 1, scanLimit: 4 },
+			signal,
+		);
+		await vi.waitFor(() => expect(stalledReads).toBe(3));
+		firstRead.resolve(documents[0]!);
+		const result = await pending;
+		expect(result).toMatchObject({
+			kind: "page",
+			matches: [{ source: { path: "src/0.ts" } }],
+			scannedSources: 1,
+		});
+		expect(aborted.sort()).toEqual(["src/1.ts", "src/2.ts", "src/3.ts"]);
+	});
+	it("reads independent scan sources concurrently with at most four live documents and retains match order", async () => {
+		const documents = Array.from({ length: 8 }, (_, index) =>
+			sourceDocument("head", `src/${index}.ts`, "needle"),
+		);
+		const waiting = new Map<string, (document: ReviewSourceDocument) => void>();
+		let active = 0;
+		let peak = 0;
+		const backend: ReviewSourceBackend = {
+			entries: () =>
+				Effect.succeed(
+					documents.map((document) => ({
+						...document.source,
+						kind: "file",
+						sizeBytes: 6,
+					})),
+				),
+			document: (identity) =>
+				Effect.promise(
+					() =>
+						new Promise<ReviewSourceDocument>((resolve) => {
+							active++;
+							peak = Math.max(peak, active);
+							waiting.set(identity.path, (document) => {
+								active--;
+								resolve(document);
+							});
+						}),
+				),
+		};
+		const catalog = new ReviewSourceCatalogService(
+			[revision],
+			backend,
+			new ReviewSourceArtifactService(await artifactDirectory(), "parallel"),
+			[],
+		);
+		const pending = catalog.search(
+			{ ...contentSearchRequest("needle"), limit: 9, scanLimit: 8 },
+			signal,
+		);
+		for (let batch = 0; batch < 2; batch++) {
+			await vi.waitFor(() => expect(waiting.size).toBe(4));
+			// Resolve in reverse order; pagination must retain repository order.
+			for (const document of documents.slice(batch * 4, batch * 4 + 4).reverse()) {
+				waiting.get(document.source.path)!(document);
+				waiting.delete(document.source.path);
+			}
+		}
+		expect(peak).toBe(4);
+		const result = await pending;
+		if (result.kind !== "page") throw new Error("Expected completed search");
+		expect(result.matches.map((match) => match.source.path)).toEqual(
+			documents.map((document) => document.source.path),
+		);
+		expect(result.nextCursor).toBeNull();
+	});
 	it("reassembles a captured PR description without losing BOM, CRLF, blank lines or UTF16 surrogate pairs", async () => {
 		const description = "\uFEFFDescrição original\r\n💡 e 𠜎\n\nÚltima linha";
 		const document = sourceDocument("pull_request", "description.md", description);

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { Cache, Effect } from "effect";
+import { Cache, Effect, Fiber } from "effect";
 import { z } from "zod";
 
 import type {
@@ -46,6 +46,15 @@ const CURSOR_SCHEMA = z.object({
 	column: z.number().int().nonnegative(),
 });
 type Cursor = z.infer<typeof CURSOR_SCHEMA>;
+interface ContentSearchProgress {
+	readonly matches: ReviewSourceSearchMatch[];
+	readonly unavailable: (ReviewSourceUnavailable & { readonly source: ReviewSourceIdentity })[];
+	cursor: Cursor;
+	scannedSources: number;
+}
+type SearchDocumentResult =
+	| { readonly kind: "document"; readonly document: ReviewSourceDocument }
+	| { readonly kind: "failure"; readonly failure: ReviewSourceUnavailable | MissingSource };
 
 /** GitHub originals and captured PR/MCP artifacts share one read-only paginated port. */
 export class ReviewSourceCatalogService implements ReviewSourceCatalog {
@@ -245,50 +254,86 @@ export class ReviewSourceCatalogService implements ReviewSourceCatalog {
 		key: string,
 	): Effect.Effect<ReviewSourceSearchPage> {
 		return Effect.gen({ self: this }, function* () {
-			const matches: ReviewSourceSearchMatch[] = [];
-			const unavailable: (ReviewSourceUnavailable & {
-				readonly source: ReviewSourceIdentity;
-			})[] = [];
-			let cursor = initial;
-			let scannedSources = 0;
+			const state: ContentSearchProgress = {
+				matches: [],
+				unavailable: [],
+				cursor: initial,
+				scannedSources: 0,
+			};
 			while (
 				canScan(
-					cursor.index,
+					state.cursor.index,
 					entries.length,
-					scannedSources,
+					state.scannedSources,
 					request.scanLimit,
-					matches.length,
+					state.matches.length,
 					request.limit,
 				)
 			) {
-				const entry = entries[cursor.index]!;
-				const result = yield* this.document(entry).pipe(
-					Effect.map((document) => ({ kind: "document" as const, document })),
-					Effect.catch((failure) =>
-						Effect.succeed({ kind: "failure" as const, failure }),
+				yield* this.searchBatch(
+					entries.slice(
+						state.cursor.index,
+						state.cursor.index + Math.min(4, request.scanLimit - state.scannedSources),
 					),
+					request,
+					state,
 				);
-				scannedSources++;
-				const scanned = scanSearchResult(
-					result,
-					entry,
-					request.query,
-					cursor,
-					request.limit - matches.length,
-				);
-				matches.push(...scanned.matches);
-				unavailable.push(...scanned.unavailable);
-				cursor = scanned.cursor;
 			}
+
 			return {
 				kind: "page",
-				matches,
-				scannedSources,
+				matches: state.matches,
+				scannedSources: state.scannedSources,
 				totalSources: entries.length,
-				unavailable,
-				nextCursor: cursor.index < entries.length ? encodeCursor({ ...cursor, key }) : null,
+				unavailable: state.unavailable,
+				nextCursor:
+					state.cursor.index < entries.length
+						? encodeCursor({ ...state.cursor, key })
+						: null,
 			};
 		});
+	}
+
+	private searchBatch(
+		entries: readonly ReviewSourceEntry[],
+		request: ReviewSourceSearchRequest,
+		state: ContentSearchProgress,
+	): Effect.Effect<void> {
+		return Effect.scoped(
+			Effect.gen({ self: this }, function* () {
+				const reads = yield* Effect.forEach(
+					entries,
+					(entry) =>
+						Effect.forkScoped(
+							this.document(entry).pipe(
+								Effect.map((document): SearchDocumentResult => ({
+									kind: "document",
+									document,
+								})),
+								Effect.catch((failure) =>
+									Effect.succeed({ kind: "failure" as const, failure }),
+								),
+							),
+						).pipe(Effect.map((fiber) => ({ entry, fiber }))),
+					{ concurrency: 4 },
+				);
+				for (const { entry, fiber } of reads) {
+					if (state.matches.length >= request.limit) break;
+					const result = yield* Fiber.join(fiber);
+					const scanned = scanSearchResult(
+						result,
+						entry,
+						request.query,
+						state.cursor,
+						request.limit - state.matches.length,
+					);
+					state.scannedSources++;
+					state.matches.push(...scanned.matches);
+					state.unavailable.push(...scanned.unavailable);
+					state.cursor = scanned.cursor;
+				}
+			}),
+		);
 	}
 }
 
