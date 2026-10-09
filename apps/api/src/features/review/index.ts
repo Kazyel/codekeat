@@ -20,7 +20,7 @@ export {
 	reviewSupportingPathCandidates,
 } from "./utils/review-source-paths.util.js";
 export { calculateReviewTokenCost } from "./utils/review-token-cost.util.js";
-export { reviewSourceLineCount } from "./utils/review-source-range.util.js";
+export { reviewSourceLineCount, readReviewSourceRange } from "./utils/review-source-range.util.js";
 export { requestReview } from "./services/request-review.service.js";
 export { ReviewQueueService } from "./services/review-queue.service.js";
 export { ReviewReportPublisherService } from "./services/review-report-publisher.service.js";
@@ -82,7 +82,10 @@ export * from "./types/review-source.types.js";
 export * from "./types/review-conclusion.types.js";
 export * from "./types/review-evidence.types.js";
 export { reviewEvidenceRetrieval } from "./services/review-evidence-retrieval.service.js";
-export { boundReviewEvidencePage } from "./utils/review-evidence-range.util.js";
+export {
+	boundReviewEvidencePage,
+	selectReviewEvidenceRange,
+} from "./utils/review-evidence-range.util.js";
 export * from "./types/review-metrics.types.js";
 export { ReviewTelemetryRepository } from "./repositories/review-telemetry.repository.js";
 export { ReviewWorkRepository } from "./repositories/review-work.repository.js";
