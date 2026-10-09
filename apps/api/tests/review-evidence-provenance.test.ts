@@ -88,9 +88,9 @@ const HEAD = {
 function output(recorded: ReviewConclusion, findings: readonly ReviewFinding[] = []): Response {
 	return google([{ text: JSON.stringify({ conclusion: recorded, findings }) }]);
 }
-function google(parts: readonly object[]): Response {
+function google(parts: readonly object[], finishReason = "STOP"): Response {
 	return Response.json({
-		candidates: [{ content: { role: "model", parts }, finishReason: "STOP" }],
+		candidates: [{ content: { role: "model", parts }, finishReason }],
 		usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 1 },
 	});
 }
@@ -116,7 +116,7 @@ function harness(responses: readonly Response[]) {
 		),
 	};
 }
-function catalog(content = CONTENT): ReviewSourceCatalog {
+function catalog(content = CONTENT, rejected: string[] = []): ReviewSourceCatalog {
 	const documents: readonly ReviewSourceDocument[] = ["head", "before"].map((role) => ({
 		source: {
 			role: role === "head" ? "head" : "before",
@@ -156,8 +156,15 @@ function catalog(content = CONTENT): ReviewSourceCatalog {
 			nextCursor: null,
 		}),
 		related: async () => ({ kind: "page", entries: [], totalEntries: 0, nextCursor: null }),
-		recordInvestigation: async () => {
-			throw new Error("No large transcript should be archived in this fixture.");
+		recordInvestigation: async (_tool, _arguments, response) => {
+			rejected.push(response);
+			return {
+				role: "investigation",
+				path: "mcp/rejected-response",
+				revision: "captured",
+				repositoryFullName: INPUT.repositoryFullName,
+				contentHash: null,
+			};
 		},
 	};
 }
@@ -185,6 +192,44 @@ const WITHOUT_INLINE: ReviewInput = {
 };
 
 describe("review evidence provenance through Google transport", () => {
+	it("repairs an unread citation by retrieving the missing source without restarting investigation", async () => {
+		const before = { ...HEAD, role: "before" as const, revision: "merge-base" };
+		const rejected: string[] = [];
+		const receipts: number[] = [];
+		const { model, requests } = harness([
+			call("source_read", {
+				source: { role: "head", path: PATH },
+				range: { kind: "lines", startLine: 1, lineCount: 3 },
+			}),
+			output(conclusion(before, "candidate"), [FINDING]),
+			call("source_read", {
+				source: { role: "before", path: PATH },
+				range: { kind: "lines", startLine: 1, lineCount: 3 },
+			}),
+			output(conclusion(before, "candidate"), [FINDING]),
+		]);
+		await expect(
+			model.review(MODEL, WITHOUT_INLINE, CHUNK, {
+				...execution(catalog(CONTENT, rejected)),
+				recordUsage: (receipt) => {
+					receipts.push(receipt.stepNumber);
+				},
+			}),
+		).resolves.toMatchObject({
+			findings: [FINDING],
+			investigation: { kind: "verified" },
+			usage: { inputTokens: 40, outputTokens: 4 },
+		});
+		expect(requests).toHaveLength(4);
+		expect(receipts).toEqual([0, 1, 2, 3]);
+		expect(requests[2]).toContain("evidence_not_delivered");
+		expect(requests[2]).toContain("opaque-signature");
+		expect(requests[2]).toContain("functionResponse");
+		expect(requests[2]).toContain(INPUT.body);
+		expect(rejected).toHaveLength(1);
+		expect(rejected[0]).toContain("merge-base");
+	});
+
 	it("accepts supplied inline sources and sends an associated candidate to the caller", async () => {
 		const { model } = harness([output(conclusion(HEAD, "candidate"), [FINDING])]);
 		await expect(model.review(MODEL, INPUT, CHUNK)).resolves.toMatchObject({

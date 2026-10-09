@@ -182,11 +182,14 @@ describe("evidence-driven investigation through the AI SDK", () => {
 	])(
 		"rejects incomplete file coverage or a stale snapshot asserted as complete",
 		async (invalid) => {
-			const h = harness([response({ findings: [], conclusion: invalid })]);
+			const h = harness([
+				response({ findings: [], conclusion: invalid }),
+				response({ findings: [], conclusion: invalid }),
+			]);
 			await expect(h.service.review(model, input, chunk)).rejects.toMatchObject({
 				issue: "context_response_invalid",
 			});
-			expect(h.fetcher).toHaveBeenCalledOnce();
+			expect(h.fetcher).toHaveBeenCalledTimes(2);
 		},
 	);
 	it("keeps unresolved investigation visible after the bounded independent attempt", async () => {

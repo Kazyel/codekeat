@@ -915,7 +915,7 @@ describe("GeminiReviewService through the Google AI SDK transport", () => {
 		{ text: JSON.stringify({ findings: [], secret: "extra-field" }), issue: "schema_invalid" },
 		{ text: "", issue: "missing_text" },
 	])("sanitizes $issue structured responses", async ({ text, issue }) => {
-		const { model } = createHarness([googleResponse([{ text }])]);
+		const { model } = createHarness([googleResponse([{ text }]), googleResponse([{ text }])]);
 		const error = await model.review(MODEL, INPUT, CHUNK).catch((error: unknown) => error);
 		expect(error).toBeInstanceOf(ReviewModelResponseError);
 		expect(error).toMatchObject({ issue });

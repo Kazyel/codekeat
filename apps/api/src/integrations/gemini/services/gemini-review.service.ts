@@ -69,6 +69,12 @@ import {
 	validateReviewCheckpoint,
 } from "../utils/review-investigation.util.js";
 import { ReviewTranscript } from "../utils/review-transcript.util.js";
+import {
+	recoverReviewResponse,
+	type ReviewCapturedResponse,
+	type ReviewResponseRejection,
+	type ReviewResponseAttempt,
+} from "../utils/review-response-recovery.util.js";
 
 const TAKEAT_GITHUB_ACCOUNT_LOGIN = "takeatgd";
 const GOOGLE_OPTIONS = {
@@ -324,39 +330,98 @@ export class GeminiReviewService implements ReviewModel, ReviewFindingJudge {
 				};
 				let stepNumber = 0;
 				try {
-					const result = await generateText({
-						abortSignal: signal,
-						onLanguageModelCallStart: (event) => beginModelCall(event.callId),
-						onLanguageModelCallEnd: (event) => usage.record({ ...event, stepNumber }),
-						system: createReviewSystemPrompt(),
-						model: this.provider(model.apiName),
-						prompt: discoveryPrompt(packet.prompt, discoveryReason),
-						output: Output.object({ schema: REVIEW_RESPONSE_SCHEMA }),
-						seed: 1,
-						temperature: 0,
-						providerOptions: { google: GOOGLE_OPTIONS },
-						...investigationOptions,
-						prepareStep: (args) => {
-							stepNumber = args.stepNumber;
-							return investigationOptions.prepareStep(args);
-						},
-						stopWhen: isStepCount(investigationRounds(sources) + 1),
-					});
-					assertInvestigation(recorder, sources, packet.required);
-					validateReviewConclusion(
-						result.output.conclusion,
-						evidenceInput,
-						chunk,
-						result.output.findings,
-						evidence.exchanges,
-						evidence.revisions,
+					const response = await Effect.runPromise(
+						recoverReviewResponse({
+							request: (attempt) =>
+								Effect.tryPromise({
+									try: async () => {
+										const repair = attempt.repair;
+										if (repair !== null) state.reopen();
+										const options =
+											repair === null
+												? investigationOptions
+												: await prepareInvestigation(
+														recorder,
+														sources,
+														usage,
+														state,
+														execution.sources,
+														signal,
+														repair.retrievalRounds,
+														investigationOptions.tools,
+													);
+										const result = await generateText({
+											abortSignal: signal,
+											onLanguageModelCallStart: (event) =>
+												beginModelCall(event.callId),
+											onLanguageModelCallEnd: (event) =>
+												usage.record({ ...event, stepNumber }),
+											onStepStart: (event) => attempt.capture.started(event),
+											onStepEnd: (event) => attempt.capture.ended(event),
+											system: createReviewSystemPrompt(),
+											model: this.provider(model.apiName),
+											...responsePrompt(
+												attempt,
+												discoveryPrompt(packet.prompt, discoveryReason),
+											),
+											output: Output.object({
+												schema: REVIEW_RESPONSE_SCHEMA,
+											}),
+											seed: 1,
+											temperature: 0,
+											providerOptions: { google: GOOGLE_OPTIONS },
+											...options,
+											prepareStep: (args) => {
+												stepNumber =
+													args.stepNumber + (repair?.stepOffset ?? 0);
+												return options.prepareStep(args);
+											},
+											stopWhen: isStepCount(
+												(repair?.retrievalRounds ??
+													investigationRounds(sources)) + 1,
+											),
+										});
+										assertInvestigationStep(usage, recorder, sources);
+										assertInvestigation(recorder, sources, packet.required);
+										validateReviewConclusion(
+											result.output.conclusion,
+											evidenceInput,
+											chunk,
+											result.output.findings,
+											evidence.exchanges,
+											evidence.revisions,
+										);
+										return result.output;
+									},
+									catch: recoveryError,
+								}),
+							rejected: (rejection, captured, attempt) =>
+								Effect.tryPromise({
+									try: async () => {
+										signal.throwIfAborted();
+										assertInvestigationStep(usage, recorder, sources);
+										assertInvestigation(recorder, sources, packet.required);
+										await this.archiveRejectedResponse(
+											rejection,
+											captured,
+											attempt,
+											execution,
+											input,
+											chunk,
+											signal,
+										);
+									},
+									catch: recoveryError,
+								}),
+						}),
+						{ signal },
 					);
 					return {
-						findings: result.output.findings,
+						findings: response.findings,
 						investigation: describeInvestigation(
 							investigation,
 							sources,
-							result.output.conclusion,
+							response.conclusion,
 						),
 						usage: usage.snapshot(),
 					};
@@ -368,6 +433,59 @@ export class GeminiReviewService implements ReviewModel, ReviewFindingJudge {
 			}, execution.signal),
 		);
 	}
+
+	private async archiveRejectedResponse(
+		rejection: ReviewResponseRejection,
+		response: ReviewCapturedResponse | null,
+		attempt: 1 | 2,
+		execution: ReviewExecution,
+		input: ReviewInput,
+		chunk: ReviewInputChunk,
+		signal: AbortSignal,
+	): Promise<void> {
+		const descriptor = { ...rejection, attempt, chunkIndex: chunk.index };
+		if (execution.sources === null || response === null) {
+			this.logger.warn(
+				{
+					code: rejection.code,
+					attempt,
+					chunkIndex: chunk.index,
+					reviewRunId: input.reviewRunId,
+				},
+				"review_response.rejected_archive_unavailable",
+			);
+			return;
+		}
+		await execution.sources.recordInvestigation(
+			"review_response_rejected",
+			JSON.stringify(descriptor),
+			JSON.stringify(response),
+			signal,
+		);
+		if (attempt === 2)
+			this.logger.warn(
+				{
+					code: rejection.code,
+					attempt,
+					chunkIndex: chunk.index,
+					reviewRunId: input.reviewRunId,
+				},
+				"review_response.repair_exhausted",
+			);
+	}
+}
+
+function recoveryError(error: unknown): Error {
+	return error instanceof Error ? error : new Error("The review response request failed.");
+}
+
+function responsePrompt(
+	attempt: ReviewResponseAttempt,
+	prompt: string,
+):
+	| { readonly prompt: string }
+	| { readonly messages: NonNullable<ReviewResponseAttempt["repair"]>["messages"] } {
+	return attempt.repair === null ? { prompt } : { messages: attempt.repair.messages };
 }
 
 function reviewEvidenceContext(
@@ -406,14 +524,16 @@ async function prepareInvestigation(
 	recorder: ReviewContextTool | null,
 	sources: ReviewSourceTools | null,
 	usage: ReviewUsageRecorder,
-	state: ReviewInvestigationState | null = null,
-	catalog: ReviewExecution["sources"] = null,
-	signal: AbortSignal = new AbortController().signal,
+	state: ReviewInvestigationState | null,
+	catalog: ReviewExecution["sources"],
+	signal: AbortSignal,
+	roundLimit?: number,
+	preparedTools?: ToolSet,
 ): Promise<{
 	readonly tools: ToolSet | undefined;
 	readonly prepareStep: PrepareStepFunction<ToolSet>;
 }> {
-	const tools = await investigationTools(recorder, sources, state);
+	const tools = preparedTools ?? (await investigationTools(recorder, sources, state));
 	const transcript = new ReviewTranscript(catalog, signal);
 	return {
 		tools: Object.keys(tools).length === 0 ? undefined : tools,
@@ -422,7 +542,7 @@ async function prepareInvestigation(
 			const compacted = await transcript.compact(messages);
 			return {
 				messages: compacted,
-				...investigationToolPolicy(tools, state, stepNumber, sources),
+				...investigationToolPolicy(tools, state, stepNumber, sources, roundLimit),
 			};
 		},
 	};
@@ -456,9 +576,10 @@ function investigationToolPolicy(
 	state: ReviewInvestigationState | null,
 	stepNumber: number,
 	sources: ReviewSourceTools | null,
+	roundLimit: number = investigationRounds(sources),
 ): { readonly activeTools: string[]; readonly toolChoice?: "none" } {
 	// Reserve the last round for structured output without tools.
-	if (stepNumber >= investigationRounds(sources)) return { activeTools: [], toolChoice: "none" };
+	if (stepNumber >= roundLimit) return { activeTools: [], toolChoice: "none" };
 	const available = Object.keys(tools);
 	const activeTools = state === null ? available : [...state.activeTools(available)];
 	if (activeTools.length === 0) return { activeTools, toolChoice: "none" };
