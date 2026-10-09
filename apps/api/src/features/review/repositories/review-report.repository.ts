@@ -62,6 +62,7 @@ export class ReviewReportRepository {
 		const report = this.connection.db
 			.select({
 				reportId: reviewReports.id,
+				githubCommentId: reviewReports.githubCommentId,
 				reviewRunId: reviewReports.reviewRunId,
 				githubInstallationId: repositories.installationId,
 				repositoryOwner: repositories.ownerLogin,
@@ -135,8 +136,6 @@ export class ReviewReportRepository {
 			.onConflictDoUpdate({
 				target: reviewReports.reviewRunId,
 				set: {
-					githubCommentId: null,
-					githubCommentUrl: null,
 					status: "pending",
 					errorCode: null,
 					updatedAt: now,

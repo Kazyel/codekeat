@@ -62,6 +62,8 @@ describe("ReviewReportPublisherService", () => {
 		expect(database.connection.db.select().from(reviewReports).get()).toMatchObject({
 			status: "failed",
 			errorCode: "github_comment_unavailable",
+			githubCommentId: 55,
+			githubCommentUrl: "https://github.com/takeat/codekeat/pull/30#issuecomment-55",
 		});
 		expect(database.connection.db.select().from(reviewReports).all()).toHaveLength(1);
 		database.close();
