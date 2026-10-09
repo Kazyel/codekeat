@@ -1,4 +1,4 @@
-import { queryOptions } from "@tanstack/react-query";
+import { infiniteQueryOptions, queryOptions } from "@tanstack/react-query";
 
 import {
 	getAnalyticsFn,
@@ -7,8 +7,12 @@ import {
 	getOverviewFn,
 	getReviewDetailFn,
 	getReviewRunsFn,
+	getReviewTelemetryFn,
+	getTelemetrySummaryFn,
 } from "@/lib/data.functions";
 import type { AnalyticsInput, ReviewRunSummary } from "@/lib/api-contracts";
+
+const INITIAL_TELEMETRY_PAGE: { readonly cursor: string | null } = { cursor: null };
 
 export const overviewQuery = queryOptions({
 	queryKey: ["overview"],
@@ -35,6 +39,25 @@ export function analyticsQuery(input: AnalyticsInput) {
 	return queryOptions({
 		queryKey: ["analytics", input],
 		queryFn: () => getAnalyticsFn({ data: input }),
+	});
+}
+
+export function reviewTelemetryQuery(id: string, active: boolean) {
+	return infiniteQueryOptions({
+		queryKey: ["review-telemetry", id],
+		initialPageParam: INITIAL_TELEMETRY_PAGE,
+		queryFn: ({ pageParam }) =>
+			getReviewTelemetryFn({ data: { id, cursor: pageParam.cursor ?? undefined } }),
+		getNextPageParam: (page) =>
+			page.nextCursor === null ? undefined : { cursor: page.nextCursor },
+		refetchInterval: active ? 10_000 : false,
+	});
+}
+
+export function telemetrySummaryQuery(input: AnalyticsInput) {
+	return queryOptions({
+		queryKey: ["review-telemetry-summary", input],
+		queryFn: () => getTelemetrySummaryFn({ data: input }),
 	});
 }
 

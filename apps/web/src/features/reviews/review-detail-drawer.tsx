@@ -24,6 +24,7 @@ import {
 	formatUsdMicros,
 } from "@/lib/format";
 import { reviewDetailQuery } from "@/lib/queries";
+import { ReviewTelemetry } from "./review-telemetry";
 
 const ERROR_LABEL: Readonly<Record<string, string>> = {
 	finding_location_invalid: "O modelo indicou uma linha fora do diff.",
@@ -221,6 +222,11 @@ function ReviewDetail({ run }: { readonly run: ReviewRunDetail }) {
 					) : null}
 				</div>
 			</section>
+
+			<ReviewTelemetry
+				reviewRunId={run.id}
+				active={run.status === "queued" || run.status === "running"}
+			/>
 
 			<section aria-labelledby="review-findings">
 				<div className="mb-4 flex flex-wrap items-center justify-between gap-3">

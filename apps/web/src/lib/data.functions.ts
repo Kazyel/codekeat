@@ -18,6 +18,9 @@ import {
 	reviewRunResponseSchema,
 	reviewRunsResponseSchema,
 	reviewUsageResponseSchema,
+	reviewTelemetryResponseSchema,
+	reviewTelemetryInputSchema,
+	reviewTelemetrySummaryResponseSchema,
 	type DashboardUser,
 } from "@/lib/api-contracts";
 
@@ -60,6 +63,30 @@ export const getAnalyticsFn = createServerFn({ method: "GET" })
 			requestApi(`/api/v1/review-quality?${query}`, reviewQualityResponseSchema),
 		]);
 		return { usage: usage.usage, quality: quality.quality };
+	});
+
+export const getReviewTelemetryFn = createServerFn({ method: "GET" })
+	.validator(reviewTelemetryInputSchema)
+	.handler(async ({ data }) => {
+		await requireSession();
+		const query = new URLSearchParams();
+		if (data.cursor !== undefined) query.set("cursor", data.cursor);
+		return requestApi(
+			`/api/v1/review-telemetry/${data.id}?${query}`,
+			reviewTelemetryResponseSchema,
+		);
+	});
+
+export const getTelemetrySummaryFn = createServerFn({ method: "GET" })
+	.validator(analyticsInputSchema)
+	.handler(async ({ data }) => {
+		await requireSession();
+		const query = new URLSearchParams({ groupBy: data.groupBy });
+		if (data.repository) query.set("repository", data.repository);
+		return requestApi(
+			`/api/v1/review-telemetry?${query}`,
+			reviewTelemetrySummaryResponseSchema,
+		);
 	});
 
 export const getConnectionsFn = createServerFn({ method: "GET" }).handler(async () => {

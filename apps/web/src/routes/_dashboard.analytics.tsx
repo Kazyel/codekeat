@@ -5,6 +5,7 @@ import { useState } from "react";
 import { Bar, CartesianGrid, ComposedChart, Legend, Line, Tooltip, XAxis, YAxis } from "recharts";
 
 import { mergeAnalytics, type AnalyticsPoint } from "@/features/analytics/analytics-data";
+import { ReviewTelemetryAnalytics } from "@/features/reviews/review-telemetry";
 import { EmptyState, ErrorState } from "@/components/content-states";
 import { PageHeader } from "@/components/page-header";
 import { CostIcon, FindingsIcon, ReviewIcon } from "@/components/product-icons";
@@ -141,6 +142,7 @@ function AnalyticsPage(): React.JSX.Element {
 				query={query}
 				scope={`${search.groupBy}:${search.repository ?? ""}`}
 			/>
+			<ReviewTelemetryAnalytics input={search} />
 		</div>
 	);
 }

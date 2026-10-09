@@ -112,6 +112,77 @@ const qualitySchema = z.object({
 
 export const reviewQualityResponseSchema = z.object({ quality: z.array(qualitySchema) });
 
+const metricCountSchema = z.number().int().nonnegative();
+const metricUsageSchema = tokenUsageSchema.extend({ costUsdMicros: z.number().nonnegative() });
+const metricPhaseSchema = z.enum([
+	"queue",
+	"input",
+	"prepare",
+	"count",
+	"generation",
+	"tool",
+	"judge",
+]);
+const metricScopeSchema = z.enum(["phase", "operation"]);
+const metricIdSchema = z
+	.string()
+	.regex(/^[A-Za-z0-9_-]{1,160}$/)
+	.nullable();
+const telemetryEventSchema = z
+	.object({
+		id: z.uuid(),
+		reviewRunId: z.uuid(),
+		createdAt: isoDateTimeSchema,
+		phase: metricPhaseSchema,
+		scope: metricScopeSchema,
+		attemptId: metricIdSchema,
+		callId: metricIdSchema,
+		unitId: metricIdSchema,
+		durationMs: metricCountSchema,
+		outcome: z.enum(["success", "failed", "ignored", "cancelled"]),
+		usage: metricUsageSchema.nullable(),
+		countedInputTokens: metricCountSchema.nullable(),
+		diffBytes: metricCountSchema.nullable(),
+		sourceBytes: metricCountSchema.nullable(),
+		sourceCount: metricCountSchema.nullable(),
+		requestCount: metricCountSchema,
+		cacheHitCount: metricCountSchema,
+		retryCount: metricCountSchema,
+		peakRssBytes: metricCountSchema,
+		capacityFailure: z.boolean(),
+	})
+	.strict();
+const telemetrySummarySchema = z
+	.object({
+		period: z.string().min(1),
+		phase: metricPhaseSchema,
+		scope: metricScopeSchema,
+		sizeBand: z.enum(["small", "medium", "large", "unknown"]),
+		sampleCount: metricCountSchema,
+		runCount: metricCountSchema,
+		p50DurationMs: metricCountSchema,
+		p95DurationMs: metricCountSchema,
+		failureCount: metricCountSchema,
+		cancelledCount: metricCountSchema,
+		ignoredCount: metricCountSchema,
+		requestCount: metricCountSchema,
+		cacheHitCount: metricCountSchema,
+		retryCount: metricCountSchema,
+		capacityFailureCount: metricCountSchema,
+		peakRssBytes: metricCountSchema,
+		knownUsageCount: metricCountSchema,
+		usage: metricUsageSchema.nullable(),
+	})
+	.strict();
+export const reviewTelemetryResponseSchema = z.object({
+	events: z.array(telemetryEventSchema),
+	nextCursor: z.string().nullable(),
+});
+export const reviewTelemetrySummaryResponseSchema = z.object({
+	days: metricCountSchema,
+	summaries: z.array(telemetrySummarySchema),
+});
+
 const repositoryConnectionSchema = z.object({
 	githubRepositoryId: z.number().int().positive(),
 	fullName: z.string().min(1),
@@ -165,6 +236,9 @@ export const analyticsInputSchema = z.object({
 });
 
 export const reviewDetailInputSchema = z.object({ id: z.uuid() });
+export const reviewTelemetryInputSchema = reviewDetailInputSchema.extend({
+	cursor: z.string().max(512).optional(),
+});
 
 export const modelInputSchema = z.object({
 	displayName: z.string().trim().min(1).max(100),
@@ -193,3 +267,5 @@ export type GitHubConnection = z.infer<
 export type Model = z.infer<typeof modelSchema>;
 export type ModelInput = z.infer<typeof modelInputSchema>;
 export type AnalyticsInput = z.infer<typeof analyticsInputSchema>;
+export type ReviewMetricEvent = z.infer<typeof telemetryEventSchema>;
+export type ReviewTelemetrySummary = z.infer<typeof telemetrySummarySchema>;
