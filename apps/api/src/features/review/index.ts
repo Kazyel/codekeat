@@ -81,3 +81,4 @@ export {
 	ReviewSourceCatalogService,
 	type ReviewSourceBackend,
 } from "./services/review-source-catalog.service.js";
+export { ReviewWorkRepository } from "./repositories/review-work.repository.js";
