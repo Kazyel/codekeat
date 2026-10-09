@@ -37,6 +37,177 @@ afterEach(async () => {
 });
 
 describe("Review source catalog", () => {
+	it("keeps a shared original load alive when one caller cancels, and caches its successful bytes", async () => {
+		const original = sourceDocument("head", "src/shared.ts", "original needle");
+		const pendingDocument = Promise.withResolvers<ReviewSourceDocument>();
+		let activeSignal: AbortSignal | null = null;
+		const backend = new SourceFixture([original]);
+		const reads = vi.spyOn(backend, "document").mockImplementation(() =>
+			Effect.promise((signal) => {
+				activeSignal = signal;
+				return pendingDocument.promise;
+			}),
+		);
+		const catalog = new ReviewSourceCatalogService(
+			[revision],
+			backend,
+			new ReviewSourceArtifactService(await artifactDirectory(), "shared-cancel"),
+			[],
+		);
+		const request = {
+			source: original.source,
+			range: { kind: "lines", startLine: 1, lineCount: 1 },
+		} as const;
+		const controller = new AbortController();
+		const first = catalog.read(request, controller.signal).catch(() => "cancelled");
+		const second = catalog.read(request, signal);
+		await vi.waitFor(() => expect(reads).toHaveBeenCalledTimes(1));
+		controller.abort();
+		expect(await first).toBe("cancelled");
+		expect(activeSignal?.aborted).toBe(false);
+		pendingDocument.resolve(original);
+		expect(await second).toMatchObject({ kind: "loaded", content: original.content });
+		expect(await catalog.read(request, signal)).toMatchObject({
+			kind: "loaded",
+			content: original.content,
+		});
+		expect(reads).toHaveBeenCalledTimes(1);
+	});
+
+	it("uses the snapshot's literal index across different queries after full documents leave the bounded cache", async () => {
+		const documents = Array.from({ length: 129 }, (_, index) =>
+			sourceDocument(
+				"head",
+				`src/${index}.ts`,
+				index === 128 ? "warm then destination" : "warm",
+			),
+		);
+		const backend = new SourceFixture(documents);
+		const reads = vi.spyOn(backend, "document");
+		const catalog = new ReviewSourceCatalogService(
+			[revision],
+			backend,
+			new ReviewSourceArtifactService(await artifactDirectory(), "literal-index"),
+			[],
+		);
+		const initial = await catalog.search(
+			{ ...contentSearchRequest("warm"), limit: 130, scanLimit: 129 },
+			signal,
+		);
+		expect(initial).toMatchObject({
+			kind: "page",
+			scannedSources: 129,
+			unavailable: [],
+			nextCursor: null,
+		});
+		expect(reads).toHaveBeenCalledTimes(129);
+		const different = await catalog.search(
+			{ ...contentSearchRequest("destination"), limit: 2, scanLimit: 129 },
+			signal,
+		);
+		expect(different).toMatchObject({
+			kind: "page",
+			scannedSources: 129,
+			unavailable: [],
+			nextCursor: null,
+			matches: [{ source: documents[128]!.source, line: 1, column: 10, length: 11 }],
+		});
+		expect(reads).toHaveBeenCalledTimes(129);
+		// The first original was evicted, but remains available without changing its bytes.
+		expect(
+			await catalog.read(
+				{
+					source: documents[0]!.source,
+					range: { kind: "lines", startLine: 1, lineCount: 1 },
+				},
+				signal,
+			),
+		).toMatchObject({ kind: "loaded", content: "warm" });
+		expect(reads).toHaveBeenCalledTimes(130);
+	});
+
+	it("shares original reads with related/search, validates requested hashes, and retries failed loads", async () => {
+		const original = sourceDocument(
+			"head",
+			"src/cost.ts",
+			'import { guard } from "./guard.js";\nneedle',
+		);
+		const failures = new Map<string, ReviewSourceUnavailable>([
+			["head:src/cost.ts", { kind: "unavailable", reason: "request_failed" }],
+		]);
+		const backend = new SourceFixture(
+			[original, sourceDocument("head", "src/guard.ts", "guard")],
+			failures,
+		);
+		const reads = vi.spyOn(backend, "document");
+		const catalog = new ReviewSourceCatalogService(
+			[revision],
+			backend,
+			new ReviewSourceArtifactService(await artifactDirectory(), "shared-documents"),
+			[],
+		);
+		const request = {
+			source: original.source,
+			range: { kind: "lines", startLine: 1, lineCount: 2 },
+		} as const;
+		expect(await catalog.read(request, signal)).toMatchObject({
+			kind: "unavailable",
+			reason: "request_failed",
+		});
+		failures.clear();
+		expect(await catalog.read(request, signal)).toMatchObject({
+			kind: "loaded",
+			content: original.content,
+		});
+		expect(
+			await catalog.related({ source: original.source, cursor: null, limit: 10 }, signal),
+		).toMatchObject({ kind: "page", entries: [{ path: "src/guard.ts" }] });
+		expect(
+			await catalog.search(
+				{ ...contentSearchRequest("needle"), limit: 2, scanLimit: 2 },
+				signal,
+			),
+		).toMatchObject({
+			kind: "page",
+			matches: [{ source: original.source, line: 2, column: 0 }],
+			unavailable: [],
+		});
+		expect(
+			await catalog.read(
+				{
+					...request,
+					source: { ...original.source, contentHash: contentHash("incorrect") },
+				},
+				signal,
+			),
+		).toMatchObject({ kind: "unavailable", reason: "invalid_request" });
+		expect(
+			reads.mock.calls.filter(([source]) => source.path === original.source.path),
+		).toHaveLength(2);
+	});
+
+	it("keeps literal positions for Unicode, multiline and short queries after indexing across chunk boundaries", async () => {
+		const content = `${"x".repeat(32767)}💡\r\nneedle\r\nnext`;
+		const catalog = await createCatalog([sourceDocument("head", "src/chunk.ts", content)]);
+		// Build the candidate index before querying the boundary and short UTF16 sequences.
+		await catalog.read(
+			{
+				source: { role: "head", path: "src/chunk.ts" },
+				range: { kind: "lines", startLine: 2, lineCount: 1 },
+			},
+			signal,
+		);
+		expect((await searchPages(catalog, "x💡\r\nneedle")).map(matchPosition)).toEqual([
+			["src/chunk.ts", 1, 32766, 11],
+		]);
+		expect((await searchPages(catalog, "💡")).map(matchPosition)).toEqual([
+			["src/chunk.ts", 1, 32767, 2],
+		]);
+		expect((await searchPages(catalog, "needle\r\nnext")).map(matchPosition)).toEqual([
+			["src/chunk.ts", 2, 0, 12],
+		]);
+	});
+
 	it("returns an available match and cancels speculative reads without waiting for an unrelated stalled document", async () => {
 		const documents = Array.from({ length: 4 }, (_, index) =>
 			sourceDocument("head", `src/${index}.ts`, "needle"),
@@ -53,23 +224,27 @@ describe("Review source catalog", () => {
 						sizeBytes: 6,
 					})),
 				),
-			document: (identity) =>
-				identity.path === "src/0.ts"
-					? Effect.promise(() => firstRead.promise)
-					: Effect.promise(
-							(signal) =>
-								new Promise<ReviewSourceDocument>((_resolve, reject) => {
-									stalledReads++;
-									signal.addEventListener(
-										"abort",
-										() => {
-											aborted.push(identity.path);
-											reject(new Error("Aborted"));
-										},
-										{ once: true },
-									);
-								}),
-						),
+			document: (identity) => {
+				if (identity.path === "src/0.ts") return Effect.promise(() => firstRead.promise);
+				if (aborted.includes(identity.path))
+					return Effect.succeed(
+						documents.find((document) => document.source.path === identity.path)!,
+					);
+				return Effect.promise(
+					(signal) =>
+						new Promise<ReviewSourceDocument>((_resolve, reject) => {
+							stalledReads++;
+							signal.addEventListener(
+								"abort",
+								() => {
+									aborted.push(identity.path);
+									reject(new Error("Aborted"));
+								},
+								{ once: true },
+							);
+						}),
+				);
+			},
 		};
 		const catalog = new ReviewSourceCatalogService(
 			[revision],
@@ -90,6 +265,15 @@ describe("Review source catalog", () => {
 			scannedSources: 1,
 		});
 		expect(aborted.sort()).toEqual(["src/1.ts", "src/2.ts", "src/3.ts"]);
+		expect(
+			await catalog.read(
+				{
+					source: documents[1]!.source,
+					range: { kind: "lines", startLine: 1, lineCount: 1 },
+				},
+				signal,
+			),
+		).toMatchObject({ kind: "loaded", content: "needle" });
 	});
 	it("reads independent scan sources concurrently with at most four live documents and retains match order", async () => {
 		const documents = Array.from({ length: 8 }, (_, index) =>

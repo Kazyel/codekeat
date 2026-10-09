@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { Cache, Effect, Fiber } from "effect";
+import { Cache, Duration, Effect, Exit, Fiber } from "effect";
 import { z } from "zod";
 
 import type {
@@ -28,9 +28,17 @@ import {
 	readReviewSourceRange,
 	reviewSourceLineOffset,
 } from "../utils/review-source-range.util.js";
+import {
+	indexReviewSourceLiteral,
+	type ReviewSourceLiteralIndex,
+} from "../utils/review-source-literal-index.util.js";
 import { ReviewSourceArtifactService } from "./review-source-artifact.service.js";
 
 type MissingSource = { readonly kind: "missing"; readonly source: ReviewSourceIdentity };
+const REPOSITORY_DOCUMENT_KEY = z.object({
+	role: z.enum(["head", "before"]),
+	path: z.string(),
+});
 export interface ReviewSourceBackend {
 	entries(
 		role: ReviewSourceRole,
@@ -53,6 +61,7 @@ interface ContentSearchProgress {
 	scannedSources: number;
 }
 type SearchDocumentResult =
+	| { readonly kind: "indexed_absence" }
 	| { readonly kind: "document"; readonly document: ReviewSourceDocument }
 	| { readonly kind: "failure"; readonly failure: ReviewSourceUnavailable | MissingSource };
 
@@ -60,6 +69,12 @@ type SearchDocumentResult =
 export class ReviewSourceCatalogService implements ReviewSourceCatalog {
 	private readonly captured = new Map<string, ReviewSourceDocument>();
 	private readonly captures: Cache.Cache<string, ReviewSourceReference, ReviewSourceUnavailable>;
+	private readonly documents: Cache.Cache<
+		string,
+		ReviewSourceDocument,
+		ReviewSourceUnavailable | MissingSource
+	>;
+	private readonly literalIndexes = new Map<string, ReviewSourceLiteralIndex>();
 	constructor(
 		readonly revisions: readonly ReviewSourceRevision[],
 		private readonly backend: ReviewSourceBackend,
@@ -75,6 +90,17 @@ export class ReviewSourceCatalogService implements ReviewSourceCatalog {
 						this.artifacts.write(this.captured.get(path)!, signal),
 					),
 			}),
+		);
+		this.documents = Effect.runSync(
+			Cache.makeWith(
+				(key: string) =>
+					this.loadRepositoryDocument(REPOSITORY_DOCUMENT_KEY.parse(JSON.parse(key))),
+				{
+					capacity: 64,
+					timeToLive: (exit) =>
+						Exit.isSuccess(exit) ? Duration.infinity : Duration.zero,
+				},
+			),
 		);
 	}
 
@@ -196,9 +222,41 @@ export class ReviewSourceCatalogService implements ReviewSourceCatalog {
 	): Effect.Effect<ReviewSourceDocument, ReviewSourceUnavailable | MissingSource> {
 		if (!isRepositoryPath(source.path))
 			return Effect.fail({ kind: "unavailable", reason: "invalid_request" });
-		if (isRepositoryRole(source.role)) return this.backend.document(source);
+		if (isRepositoryRole(source.role))
+			return Cache.get(this.documents, repositoryDocumentKey(source)).pipe(
+				Effect.flatMap((document) => validateDocumentHash(document, source)),
+			);
 		if (source.role === "investigation") return this.artifactDocument(source);
 		return this.capturedDocument(source);
+	}
+
+	private loadRepositoryDocument(
+		source: ReviewSourceIdentity,
+	): Effect.Effect<ReviewSourceDocument, ReviewSourceUnavailable | MissingSource> {
+		return Effect.gen({ self: this }, function* () {
+			const document = yield* this.backend.document(source);
+			const key = literalIndexKey(document.source);
+			if (!this.literalIndexes.has(key)) {
+				const index = yield* indexReviewSourceLiteral(document.content);
+				this.literalIndexes.set(key, index);
+			}
+			return document;
+		});
+	}
+
+	private searchDocument(
+		entry: ReviewSourceEntry,
+		query: string,
+	): Effect.Effect<SearchDocumentResult> {
+		if (isRepositoryRole(entry.role)) {
+			const index = this.literalIndexes.get(literalIndexKey(entry));
+			if (index !== undefined && !index.mayContain(query))
+				return Effect.succeed({ kind: "indexed_absence" });
+		}
+		return this.document(entry).pipe(
+			Effect.map((document): SearchDocumentResult => ({ kind: "document", document })),
+			Effect.catch((failure) => Effect.succeed({ kind: "failure" as const, failure })),
+		);
 	}
 
 	private capturedDocument(
@@ -304,17 +362,9 @@ export class ReviewSourceCatalogService implements ReviewSourceCatalog {
 				const reads = yield* Effect.forEach(
 					entries,
 					(entry) =>
-						Effect.forkScoped(
-							this.document(entry).pipe(
-								Effect.map((document): SearchDocumentResult => ({
-									kind: "document",
-									document,
-								})),
-								Effect.catch((failure) =>
-									Effect.succeed({ kind: "failure" as const, failure }),
-								),
-							),
-						).pipe(Effect.map((fiber) => ({ entry, fiber }))),
+						Effect.forkScoped(this.searchDocument(entry, request.query)).pipe(
+							Effect.map((fiber) => ({ entry, fiber })),
+						),
 					{ concurrency: 4 },
 				);
 				for (const { entry, fiber } of reads) {
@@ -380,9 +430,7 @@ function pathSearch(
 }
 
 function scanSearchResult(
-	result:
-		| { readonly kind: "document"; readonly document: ReviewSourceDocument }
-		| { readonly kind: "failure"; readonly failure: ReviewSourceUnavailable | MissingSource },
+	result: SearchDocumentResult,
 	source: ReviewSourceEntry,
 	query: string,
 	cursor: Cursor,
@@ -396,6 +444,12 @@ function scanSearchResult(
 } {
 	if (result.kind === "document")
 		return { ...scanDocument(result.document, query, cursor, limit), unavailable: [] };
+	if (result.kind === "indexed_absence")
+		return {
+			matches: [],
+			unavailable: [],
+			cursor: { ...cursor, index: cursor.index + 1, line: 1, column: 0 },
+		};
 	return {
 		matches: [],
 		unavailable: [
@@ -460,6 +514,26 @@ function advancePosition(
 }
 function isRepositoryRole(role: ReviewSourceRole): boolean {
 	return role === "head" || role === "before";
+}
+function repositoryDocumentKey(source: ReviewSourceIdentity): string {
+	return JSON.stringify({ role: source.role, path: source.path });
+}
+function literalIndexKey(source: ReviewSourceReference): string {
+	return JSON.stringify([
+		source.role,
+		source.repositoryFullName,
+		source.revision,
+		source.path,
+		source.contentHash,
+	]);
+}
+function validateDocumentHash(
+	document: ReviewSourceDocument,
+	requested: ReviewSourceIdentity,
+): Effect.Effect<ReviewSourceDocument, ReviewSourceUnavailable> {
+	if (requested.contentHash != null && requested.contentHash !== document.source.contentHash)
+		return Effect.fail(invalidRequest());
+	return Effect.succeed(document);
 }
 function canScan(
 	index: number,
