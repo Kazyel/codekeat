@@ -3,6 +3,7 @@ import {
 	repositories,
 	reviewReports,
 	reviewRuns,
+	reviewWorkUnits,
 	type DatabaseConnection,
 } from "@codekeat/database";
 import { and, eq, sql } from "drizzle-orm";
@@ -14,6 +15,7 @@ import type {
 	ReviewReportErrorCode,
 	StoredFinding,
 } from "../types/review-repository.types.js";
+import { summarizeReviewInvestigation } from "../utils/review-investigation-summary.util.js";
 
 interface ReviewRunReference {
 	readonly githubRepositoryId: number;
@@ -59,47 +61,68 @@ export class ReviewReportRepository {
 	}
 
 	claimReviewReport(reviewReportId: string): PublishableReviewReport | null {
-		const claim = this.connection.db
-			.update(reviewReports)
-			.set({ status: "publishing", updatedAt: currentTimestamp() })
-			.where(
-				and(
-					eq(reviewReports.id, reviewReportId),
-					sql`${reviewReports.status} IN ('pending', 'failed')`,
+		return this.connection.db.transaction(() => {
+			const claim = this.connection.db
+				.update(reviewReports)
+				.set({ status: "publishing", updatedAt: currentTimestamp() })
+				.where(
+					and(
+						eq(reviewReports.id, reviewReportId),
+						sql`${reviewReports.status} IN ('pending', 'failed')`,
+					),
+				)
+				.run();
+
+			if (claim.changes === 0) {
+				return null;
+			}
+
+			const report = this.connection.db
+				.select({
+					reportId: reviewReports.id,
+					githubCommentId: reviewReports.githubCommentId,
+					reviewRunId: reviewReports.reviewRunId,
+					githubInstallationId: repositories.installationId,
+					repositoryOwner: repositories.ownerLogin,
+					repositoryName: repositories.name,
+					repositoryFullName: sql<string>`${repositories.ownerLogin} || '/' || ${repositories.name}`,
+					pullRequestNumber: reviewReports.pullRequestNumber,
+					headSha: reviewRuns.headSha,
+				})
+				.from(reviewReports)
+				.innerJoin(reviewRuns, eq(reviewReports.reviewRunId, reviewRuns.id))
+				.innerJoin(
+					repositories,
+					eq(reviewReports.githubRepositoryId, repositories.githubRepositoryId),
+				)
+				.where(eq(reviewReports.id, reviewReportId))
+				.get();
+
+			if (report === undefined) {
+				throw new Error("Claimed review report is missing its review run.");
+			}
+
+			return {
+				...report,
+				findings: this.findFindings(report.reviewRunId),
+				investigation: summarizeReviewInvestigation(
+					this.connection.db
+						.select({
+							status: reviewWorkUnits.status,
+							resultJson: reviewWorkUnits.resultJson,
+						})
+						.from(reviewWorkUnits)
+						.where(
+							and(
+								eq(reviewWorkUnits.reviewRunId, report.reviewRunId),
+								eq(reviewWorkUnits.stage, "review"),
+								sql`${reviewWorkUnits.status} != 'split'`,
+							),
+						)
+						.all(),
 				),
-			)
-			.run();
-
-		if (claim.changes === 0) {
-			return null;
-		}
-
-		const report = this.connection.db
-			.select({
-				reportId: reviewReports.id,
-				githubCommentId: reviewReports.githubCommentId,
-				reviewRunId: reviewReports.reviewRunId,
-				githubInstallationId: repositories.installationId,
-				repositoryOwner: repositories.ownerLogin,
-				repositoryName: repositories.name,
-				repositoryFullName: sql<string>`${repositories.ownerLogin} || '/' || ${repositories.name}`,
-				pullRequestNumber: reviewReports.pullRequestNumber,
-				headSha: reviewRuns.headSha,
-			})
-			.from(reviewReports)
-			.innerJoin(reviewRuns, eq(reviewReports.reviewRunId, reviewRuns.id))
-			.innerJoin(
-				repositories,
-				eq(reviewReports.githubRepositoryId, repositories.githubRepositoryId),
-			)
-			.where(eq(reviewReports.id, reviewReportId))
-			.get();
-
-		if (report === undefined) {
-			throw new Error("Claimed review report is missing its review run.");
-		}
-
-		return { ...report, findings: this.findFindings(report.reviewRunId) };
+			};
+		});
 	}
 
 	completeReviewReport(reviewReportId: string, comment: ReviewReportComment): void {

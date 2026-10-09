@@ -1,4 +1,4 @@
-import { findings, reviewReports } from "@codekeat/database";
+import { findings, reviewReports, reviewWorkUnits } from "@codekeat/database";
 import { eq } from "drizzle-orm";
 import pino from "pino";
 import { describe, expect, it } from "vitest";
@@ -7,13 +7,15 @@ import {
 	formatReviewReport,
 	type ReviewReportPublisherClient,
 	ReviewReportPublisherService,
+	type ReviewModelResult,
 } from "#features/review";
-import { createTestDatabase } from "./test-database.js";
+import { createTestDatabase, type TestDatabase } from "./test-database.js";
+import type { ReviewConclusion } from "../src/features/review/types/review-conclusion.types.js";
 
 const REVIEW_RUN_ID = "review-run-1";
 
 describe("ReviewReportPublisherService", () => {
-	it("publishes a positive report when a completed run has no findings", async () => {
+	it("publishes historical no-findings reports without claiming a recorded investigation", async () => {
 		const database = createCompletedReview([]);
 		const client = new RecordedPublisher();
 		const report = database.connection.db.select().from(reviewReports).get();
@@ -33,11 +35,81 @@ describe("ReviewReportPublisherService", () => {
 			"**Escopo:** diff completo do PR no snapshot do HEAD `aaaaaaa` — não apenas esse commit.",
 		);
 		expect(body).toContain(
-			"Não encontramos problemas concretos no diff completo deste PR nesse snapshot.",
+			"Nenhum finding publicado; investigação detalhada não registrada nesta execução.",
 		);
 		expect(database.connection.db.select().from(reviewReports).get()?.status).toBe("published");
 		database.close();
 	});
+
+	it.each(["complete", "incomplete"] as const)(
+		"publishes counts from %s investigation leaves without exposing private evidence",
+		(status) => {
+			const database = createCompletedReview([]);
+			persistCheckpoint(database, "leaf-1", reviewResult(conclusion("complete")));
+			persistCheckpoint(database, "leaf-2", reviewResult(conclusion(status)));
+			persistCheckpoint(database, "split-parent", "invalid parent result", "split");
+			persistCheckpoint(database, "judge", "invalid judge result", "completed", "judge");
+			const report = database.reviewReportRepository.claimReviewReport("report-1");
+			if (report === null) fail();
+			const body = formatReviewReport(report);
+
+			expect(report.investigation).toMatchObject({
+				status,
+				unitCount: 2,
+				recordedUnitCount: 2,
+				reviewedPathCount: 1,
+				scenarioCount: 2,
+				refutedScenarioCount: status === "complete" ? 2 : 1,
+				unresolvedScenarioCount: status === "complete" ? 0 : 1,
+				gapCount: status === "complete" ? 0 : 1,
+			});
+			expect(body).toContain("2/2 unidades, 1 arquivos e 2 cenários examinados");
+			expect(body).not.toContain("private evidence");
+			expect(body).not.toContain("Não encontramos problemas concretos");
+			expect(body.includes("A investigação está incompleta")).toBe(status === "incomplete");
+			database.close();
+		},
+	);
+
+	it("retains incomplete coverage alongside published findings and historical checkpoints", () => {
+		const database = createCompletedReview([FINDING]);
+		persistCheckpoint(database, "new", reviewResult(conclusion("complete")));
+		persistCheckpoint(database, "historical", {
+			...reviewResult(conclusion("complete")),
+			investigation: { kind: "not_enabled" },
+		});
+		const report = database.reviewReportRepository.claimReviewReport("report-1");
+		if (report === null) fail();
+		expect(report.investigation).toMatchObject({
+			status: "incomplete",
+			recordedUnitCount: 1,
+			unitCount: 2,
+		});
+		const body = formatReviewReport(report);
+		expect(body).toContain("Encontramos observações concretas");
+		expect(body).toContain("Investigação incompleta");
+		database.close();
+	});
+
+	it.each(["invalid", "missing", "unfinished"] as const)(
+		"refuses a report with a %s checkpoint and preserves its pending claim",
+		(kind) => {
+			const database = createCompletedReview([]);
+			persistCheckpoint(
+				database,
+				"leaf",
+				kind === "invalid" ? "not JSON" : null,
+				kind === "unfinished" ? "pending" : "completed",
+			);
+			expect(() => database.reviewReportRepository.claimReviewReport("report-1")).toThrow(
+				/JSON|checkpoint/,
+			);
+			expect(database.connection.db.select().from(reviewReports).get()?.status).toBe(
+				"pending",
+			);
+			database.close();
+		},
+	);
 
 	it("retries a failed report without creating a duplicate", async () => {
 		const database = createCompletedReview([FINDING]);
@@ -238,6 +310,97 @@ function createReport(reviewFindings: readonly (typeof FINDING)[]) {
 
 function fail(): never {
 	throw new Error("Expected report is missing.");
+}
+
+function conclusion(status: ReviewConclusion["status"]): ReviewConclusion {
+	const hypothesis = {
+		path: "private evidence/path.ts",
+		line: 1,
+		scenario: "private evidence scenario",
+		expectedBehavior: "private evidence expected behavior",
+		observedBehavior: "private evidence observed behavior",
+	};
+	if (status === "incomplete")
+		return {
+			status,
+			reviewedPaths: [hypothesis.path],
+			hypotheses: [
+				{
+					...hypothesis,
+					outcome: "unresolved",
+					evidence: [],
+					missingEvidence: ["private evidence missing"],
+				},
+			],
+			gaps: ["private evidence gap"],
+		};
+	return {
+		status,
+		reviewedPaths: [hypothesis.path],
+		hypotheses: [
+			{
+				...hypothesis,
+				outcome: "refuted",
+				evidence: [
+					{
+						path: hypothesis.path,
+						role: "head",
+						revision: "a".repeat(40),
+						startLine: 1,
+						endLine: 2,
+					},
+				],
+				missingEvidence: [],
+			},
+		],
+	};
+}
+
+function reviewResult(recordedConclusion: ReviewConclusion): ReviewModelResult {
+	return {
+		findings: [],
+		investigation: {
+			kind: "verified",
+			context: "not_enabled",
+			exchanges: [],
+			conclusion: recordedConclusion,
+		},
+		usage: { inputTokens: 1, outputTokens: 1, cacheTokens: 0, costUsdMicros: 1 },
+	};
+}
+
+function persistCheckpoint(
+	database: TestDatabase,
+	id: string,
+	result: ReviewModelResult | string | null,
+	status: typeof reviewWorkUnits.$inferInsert.status = "completed",
+	stage: typeof reviewWorkUnits.$inferInsert.stage = "review",
+): void {
+	const encodedChunk = JSON.stringify({
+		changedLines: [["src/example.ts", [2]]],
+		diff: "diff --git a/src/example.ts b/src/example.ts\n--- a/src/example.ts\n+++ b/src/example.ts\n@@ -1 +1,2 @@\n old\n+new\n",
+		referenceBefore: "",
+		referenceAfter: "",
+		index: 1,
+		total: 1,
+	});
+	database.connection.db
+		.insert(reviewWorkUnits)
+		.values({
+			id,
+			reviewRunId: REVIEW_RUN_ID,
+			stage,
+			parentId: null,
+			status,
+			ordinal: 0,
+			payloadJson: encodedChunk,
+			resultJson:
+				typeof result === "string" || result === null
+					? result
+					: JSON.stringify({ chunk: encodedChunk, result }),
+			updatedAt: new Date().toISOString(),
+		})
+		.run();
 }
 
 const FINDING = {

@@ -2,19 +2,48 @@ import {
 	FINDING_SEVERITY_ORDER,
 	SHORT_COMMIT_SHA_LENGTH,
 } from "../constants/review-report.constants.js";
-import type { PublishableReviewReport, StoredFinding } from "../types/review-repository.types.js";
+import type {
+	PublishableReviewReport,
+	ReviewInvestigationSummary,
+	StoredFinding,
+} from "../types/review-repository.types.js";
 
 export function formatReviewReport(report: PublishableReviewReport): string {
 	const header = [
 		"## Codekeat — revisão consultiva",
 		`**Escopo:** diff completo do PR no snapshot do HEAD \`${report.headSha.slice(0, SHORT_COMMIT_SHA_LENGTH)}\` — não apenas esse commit.`,
 	];
-	const content = report.findings.length === 0 ? noFindingsMessage() : findingsMessage(report);
-	return [...header, content, "Isso não substitui a revisão humana."].join("\n\n");
+	const content =
+		report.findings.length === 0
+			? noFindingsMessage(report.investigation)
+			: findingsMessage(report);
+	return [
+		...header,
+		content,
+		...investigationMessage(report.investigation),
+		"Isso não substitui a revisão humana.",
+	].join("\n\n");
 }
 
-function noFindingsMessage(): string {
-	return "✅ Não encontramos problemas concretos no diff completo deste PR nesse snapshot.";
+function noFindingsMessage(investigation: ReviewInvestigationSummary): string {
+	switch (investigation.status) {
+		case "complete":
+			return "Não publicamos findings após examinar os cenários registrados para este snapshot.";
+		case "incomplete":
+			return "⚠️ Nenhum finding publicado. A investigação está incompleta e não permite concluir que o PR está livre de problemas.";
+		case "unrecorded":
+			return "Nenhum finding publicado; investigação detalhada não registrada nesta execução.";
+	}
+}
+
+function investigationMessage(investigation: ReviewInvestigationSummary): readonly string[] {
+	if (investigation.status === "unrecorded") return [];
+	const coverage = `**Investigação registrada:** ${investigation.recordedUnitCount}/${investigation.unitCount} unidades, ${investigation.reviewedPathCount} arquivos e ${investigation.scenarioCount} cenários examinados (${investigation.refutedScenarioCount} hipóteses refutadas, ${investigation.candidateScenarioCount} candidatas e ${investigation.unresolvedScenarioCount} não resolvidas). Esses registros não comprovam a ausência de outros defeitos.`;
+	if (investigation.status === "complete") return [coverage];
+	return [
+		coverage,
+		`**Investigação incompleta:** ${investigation.gapCount} lacunas registradas e ${investigation.unitCount - investigation.recordedUnitCount} unidades sem investigação detalhada. As evidências e os detalhes das lacunas permanecem nos registros privados da análise.`,
+	];
 }
 
 function findingsMessage(report: PublishableReviewReport): string {

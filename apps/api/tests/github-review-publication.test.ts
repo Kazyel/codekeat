@@ -249,5 +249,6 @@ function createReport(reportId: string, reviewRunId: string): PublishableReviewR
 		pullRequestNumber: 30,
 		headSha: "a".repeat(40),
 		findings: [],
+		investigation: { status: "unrecorded", unitCount: 0 },
 	};
 }

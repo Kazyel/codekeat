@@ -73,6 +73,23 @@ export interface ReviewReportComment {
 	readonly githubCommentUrl: string;
 }
 
+interface RecordedInvestigationCounts {
+	readonly unitCount: number;
+	readonly recordedUnitCount: number;
+	readonly reviewedPathCount: number;
+	readonly scenarioCount: number;
+	readonly refutedScenarioCount: number;
+	readonly candidateScenarioCount: number;
+	readonly unresolvedScenarioCount: number;
+	readonly gapCount: number;
+}
+
+/** Public reporting exposes counts only; source evidence remains in private checkpoints. */
+export type ReviewInvestigationSummary =
+	| ({ readonly status: "complete" } & RecordedInvestigationCounts)
+	| ({ readonly status: "incomplete" } & RecordedInvestigationCounts)
+	| { readonly status: "unrecorded"; readonly unitCount: number };
+
 export interface PublishableReviewReport {
 	readonly reportId: string;
 	readonly githubCommentId: number | null;
@@ -84,6 +101,7 @@ export interface PublishableReviewReport {
 	readonly pullRequestNumber: number;
 	readonly headSha: string;
 	readonly findings: readonly StoredFinding[];
+	readonly investigation: ReviewInvestigationSummary;
 }
 export interface ReviewRunCompletion {
 	readonly reviewUsage: ReviewTokenUsage;
