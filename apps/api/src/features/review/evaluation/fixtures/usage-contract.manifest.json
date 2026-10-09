@@ -1,0 +1,113 @@
+{
+	"version": 1,
+	"corpusId": "usage-contract-v1",
+	"model": {
+		"id": "evaluation-model",
+		"apiName": "gemini-3.8-flash",
+		"inputNanoUsdPerToken": 750,
+		"cachedInputNanoUsdPerToken": 75,
+		"outputNanoUsdPerToken": 3750
+	},
+	"concurrency": 1,
+	"caseDeadlineMs": 1800000,
+	"cases": [
+		{
+			"id": "case-a",
+			"repositoryFullName": "evaluation/usage",
+			"headSha": "ab8b9ddc26b49d1a3639fdf6b2a6220a626bced8",
+			"baseSha": "0257e0066c2f3b96cc310acdcb4a44d94216de52",
+			"title": "Adjust usage accounting fast paths",
+			"body": "Keep charging input, cached input and output according to their rates. Preserve valid usage records.",
+			"chunks": [
+				{
+					"diff": "diff --git a/src/cost.ts b/src/cost.ts\n--- a/src/cost.ts\n+++ b/src/cost.ts\n@@ -1,5 +1,6 @@\n export interface Usage { inputTokens: number; cacheTokens: number; outputTokens: number }\n export function cost(usage: Usage): number {\n   const uncached = usage.inputTokens - usage.cacheTokens;\n+  if (uncached === 0) return 0;\n   return uncached * 0.75 + usage.cacheTokens * 0.075 + usage.outputTokens * 3.75;\n }\n",
+					"referenceBefore": "export interface Usage { inputTokens: number; cacheTokens: number; outputTokens: number }\nexport function cost(usage: Usage): number {\n  const uncached = usage.inputTokens - usage.cacheTokens;\n  return uncached * 0.75 + usage.cacheTokens * 0.075 + usage.outputTokens * 3.75;\n}\n",
+					"referenceAfter": "export interface Usage { inputTokens: number; cacheTokens: number; outputTokens: number }\nexport function cost(usage: Usage): number {\n  const uncached = usage.inputTokens - usage.cacheTokens;\n  if (uncached === 0) return 0;\n  return uncached * 0.75 + usage.cacheTokens * 0.075 + usage.outputTokens * 3.75;\n}\n",
+					"changedLines": {
+						"src/cost.ts": [4]
+					}
+				}
+			],
+			"sources": [
+				{
+					"role": "before",
+					"path": "src/cost.ts",
+					"revision": "0257e0066c2f3b96cc310acdcb4a44d94216de52",
+					"content": "export interface Usage { inputTokens: number; cacheTokens: number; outputTokens: number }\nexport function cost(usage: Usage): number {\n  const uncached = usage.inputTokens - usage.cacheTokens;\n  return uncached * 0.75 + usage.cacheTokens * 0.075 + usage.outputTokens * 3.75;\n}\n",
+					"contentHash": "sha256:f39524131e20c8e547482fef61a01cecd047be9c96784b3b25bae71f8617d03a"
+				},
+				{
+					"role": "before",
+					"path": "src/record-usage.ts",
+					"revision": "0257e0066c2f3b96cc310acdcb4a44d94216de52",
+					"content": "import { cost, type Usage } from \"./cost.js\";\nexport function recordUsage(usage: Usage): number {\n  if (usage.inputTokens < 0 || usage.cacheTokens < 0 || usage.outputTokens < 0)\n    throw new Error(\"Token counts must be nonnegative.\");\n  if (usage.cacheTokens > usage.inputTokens)\n    throw new Error(\"Cached input is a subset of input.\");\n  return cost(usage);\n}\n",
+					"contentHash": "sha256:0ba7e79f7d73db1fd0512c380fbfac8dcc1b1aa66996b0571296009ef57eda3b"
+				},
+				{
+					"role": "head",
+					"path": "src/cost.ts",
+					"revision": "ab8b9ddc26b49d1a3639fdf6b2a6220a626bced8",
+					"content": "export interface Usage { inputTokens: number; cacheTokens: number; outputTokens: number }\nexport function cost(usage: Usage): number {\n  const uncached = usage.inputTokens - usage.cacheTokens;\n  if (uncached === 0) return 0;\n  return uncached * 0.75 + usage.cacheTokens * 0.075 + usage.outputTokens * 3.75;\n}\n",
+					"contentHash": "sha256:69e814f9d77cd660f9d99331077b023d3610ad8383e5778bd612a35d7e918e31"
+				},
+				{
+					"role": "head",
+					"path": "src/record-usage.ts",
+					"revision": "ab8b9ddc26b49d1a3639fdf6b2a6220a626bced8",
+					"content": "import { cost, type Usage } from \"./cost.js\";\nexport function recordUsage(usage: Usage): number {\n  if (usage.inputTokens < 0 || usage.cacheTokens < 0 || usage.outputTokens < 0)\n    throw new Error(\"Token counts must be nonnegative.\");\n  if (usage.cacheTokens > usage.inputTokens)\n    throw new Error(\"Cached input is a subset of input.\");\n  return cost(usage);\n}\n",
+					"contentHash": "sha256:0ba7e79f7d73db1fd0512c380fbfac8dcc1b1aa66996b0571296009ef57eda3b"
+				}
+			],
+			"mergeBaseSha": "0257e0066c2f3b96cc310acdcb4a44d94216de52"
+		},
+		{
+			"id": "case-b",
+			"repositoryFullName": "evaluation/usage",
+			"headSha": "740b06a7e8a089c27363852678f7c254d0d74ba6",
+			"baseSha": "0257e0066c2f3b96cc310acdcb4a44d94216de52",
+			"title": "Adjust usage accounting fast paths",
+			"body": "Keep charging input, cached input and output according to their rates. Preserve valid usage records.",
+			"chunks": [
+				{
+					"diff": "diff --git a/src/cost.ts b/src/cost.ts\n--- a/src/cost.ts\n+++ b/src/cost.ts\n@@ -1,5 +1,6 @@\n export interface Usage { inputTokens: number; cacheTokens: number; outputTokens: number }\n export function cost(usage: Usage): number {\n+  if (usage.inputTokens === 0 && usage.outputTokens === 0) return 0;\n   const uncached = usage.inputTokens - usage.cacheTokens;\n   return uncached * 0.75 + usage.cacheTokens * 0.075 + usage.outputTokens * 3.75;\n }\n",
+					"referenceBefore": "export interface Usage { inputTokens: number; cacheTokens: number; outputTokens: number }\nexport function cost(usage: Usage): number {\n  const uncached = usage.inputTokens - usage.cacheTokens;\n  return uncached * 0.75 + usage.cacheTokens * 0.075 + usage.outputTokens * 3.75;\n}\n",
+					"referenceAfter": "export interface Usage { inputTokens: number; cacheTokens: number; outputTokens: number }\nexport function cost(usage: Usage): number {\n  if (usage.inputTokens === 0 && usage.outputTokens === 0) return 0;\n  const uncached = usage.inputTokens - usage.cacheTokens;\n  return uncached * 0.75 + usage.cacheTokens * 0.075 + usage.outputTokens * 3.75;\n}\n",
+					"changedLines": {
+						"src/cost.ts": [3]
+					}
+				}
+			],
+			"sources": [
+				{
+					"role": "before",
+					"path": "src/cost.ts",
+					"revision": "0257e0066c2f3b96cc310acdcb4a44d94216de52",
+					"content": "export interface Usage { inputTokens: number; cacheTokens: number; outputTokens: number }\nexport function cost(usage: Usage): number {\n  const uncached = usage.inputTokens - usage.cacheTokens;\n  return uncached * 0.75 + usage.cacheTokens * 0.075 + usage.outputTokens * 3.75;\n}\n",
+					"contentHash": "sha256:f39524131e20c8e547482fef61a01cecd047be9c96784b3b25bae71f8617d03a"
+				},
+				{
+					"role": "before",
+					"path": "src/record-usage.ts",
+					"revision": "0257e0066c2f3b96cc310acdcb4a44d94216de52",
+					"content": "import { cost, type Usage } from \"./cost.js\";\nexport function recordUsage(usage: Usage): number {\n  if (usage.inputTokens < 0 || usage.cacheTokens < 0 || usage.outputTokens < 0)\n    throw new Error(\"Token counts must be nonnegative.\");\n  if (usage.cacheTokens > usage.inputTokens)\n    throw new Error(\"Cached input is a subset of input.\");\n  return cost(usage);\n}\n",
+					"contentHash": "sha256:0ba7e79f7d73db1fd0512c380fbfac8dcc1b1aa66996b0571296009ef57eda3b"
+				},
+				{
+					"role": "head",
+					"path": "src/cost.ts",
+					"revision": "740b06a7e8a089c27363852678f7c254d0d74ba6",
+					"content": "export interface Usage { inputTokens: number; cacheTokens: number; outputTokens: number }\nexport function cost(usage: Usage): number {\n  if (usage.inputTokens === 0 && usage.outputTokens === 0) return 0;\n  const uncached = usage.inputTokens - usage.cacheTokens;\n  return uncached * 0.75 + usage.cacheTokens * 0.075 + usage.outputTokens * 3.75;\n}\n",
+					"contentHash": "sha256:40bdb2c9d4e61e4c2ae14e02bc1fcd6caf090721eb2bdcb1a387f5f32b5445b6"
+				},
+				{
+					"role": "head",
+					"path": "src/record-usage.ts",
+					"revision": "740b06a7e8a089c27363852678f7c254d0d74ba6",
+					"content": "import { cost, type Usage } from \"./cost.js\";\nexport function recordUsage(usage: Usage): number {\n  if (usage.inputTokens < 0 || usage.cacheTokens < 0 || usage.outputTokens < 0)\n    throw new Error(\"Token counts must be nonnegative.\");\n  if (usage.cacheTokens > usage.inputTokens)\n    throw new Error(\"Cached input is a subset of input.\");\n  return cost(usage);\n}\n",
+					"contentHash": "sha256:0ba7e79f7d73db1fd0512c380fbfac8dcc1b1aa66996b0571296009ef57eda3b"
+				}
+			],
+			"mergeBaseSha": "0257e0066c2f3b96cc310acdcb4a44d94216de52"
+		}
+	]
+}

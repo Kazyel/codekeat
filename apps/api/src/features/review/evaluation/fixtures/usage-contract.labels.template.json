@@ -1,0 +1,22 @@
+{
+	"version": 1,
+	"corpusHash": "039a21b39fa4feeb16098f1ebdd2a79e87b72c660cb2e5ba0065e1156d18cf84",
+	"cases": [
+		{
+			"caseId": "case-a",
+			"defects": [
+				{
+					"id": "cached-and-output",
+					"path": "src/cost.ts",
+					"startLine": 4,
+					"endLine": 4
+				}
+			]
+		},
+		{
+			"caseId": "case-b",
+			"defects": []
+		}
+	],
+	"annotations": []
+}
