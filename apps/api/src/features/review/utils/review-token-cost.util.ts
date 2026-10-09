@@ -5,8 +5,13 @@ export function calculateReviewTokenCost(
 	model: ReviewModelConfiguration,
 	usage: Pick<ReviewTokenUsage, "inputTokens" | "outputTokens" | "cacheTokens">,
 ): number {
+	if (usage.inputTokens === 0 && usage.outputTokens === 0) return 0;
+
+	const uncachedInputTokens = usage.inputTokens - usage.cacheTokens;
+	if (uncachedInputTokens === 0) return 0;
+
 	return (
-		((usage.inputTokens - usage.cacheTokens) * model.inputNanoUsdPerToken +
+		(uncachedInputTokens * model.inputNanoUsdPerToken +
 			usage.cacheTokens * model.cachedInputNanoUsdPerToken +
 			usage.outputTokens * model.outputNanoUsdPerToken) /
 		1_000
