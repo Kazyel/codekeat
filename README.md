@@ -126,18 +126,29 @@ para os detalhes operacionais e de permissões.
 
 ## Fluxo de revisão
 
-Eventos elegíveis de PR criam um Review Run. A fila local processa um run de cada vez e obtém o diff,
-a descrição e o contexto do repositório como GitHub App. Os documentos em `.codekeat/` e os arquivos
-alterados são lidos no SHA do PR, com limites explícitos de tamanho e quantidade.
+Eventos elegíveis de PR criam um Review Run. A fila local processa até cinco runs ao mesmo tempo e obtém
+o diff, a descrição e o contexto do repositório como GitHub App. Os documentos em `.codekeat/` e os arquivos
+alterados são lidos integralmente no SHA do PR. Imports locais diretos e testes relacionados
+complementam o contexto, sem cortes por quantidade de caracteres.
+
+`REVIEW_CONCURRENCY` em `apps/api/.env` define o máximo de análises simultâneas. O padrão é `5`;
+o valor deve ser um inteiro positivo. Use `1` para processamento serial. Cada run mantém seus chunks
+e julgamentos sequenciais. Relatórios usam uma fila separada, com uma publicação por vez, para não
+esperarem pelas análises em andamento. O limite vale dentro de uma única réplica da API.
 
 O Gemini recebe esse contexto com cada chunk. Para instalações da Takeat, o modelo também pode consultar
 código e histórico técnico no MCP. O juiz recebe título, descrição, contexto do repositório e as consultas
-MCP realizadas na geração dos candidatos. A API persiste o resultado do julgamento e atualiza um único
-comentário consultivo no PR. Quando não encontra um problema concreto, o relatório diz isso explicitamente.
+MCP realizadas na geração dos candidatos. Instruções ficam separadas dos dados externos. Antes de cada
+geração, a API conta o request completo e verifica a capacidade real do modelo. Um contexto indivisível
+que não cabe causa uma falha explícita. A API persiste o julgamento e publica um comentário
+consultivo por execução, identificado mesmo quando o GitHub grava uma publicação e sua resposta se perde.
+Quando não encontra um problema concreto, o relatório diz isso explicitamente.
 
 A integração usa o [AI SDK da Vercel](https://ai-sdk.dev/docs/introduction) com o provider Google e
 respostas estruturadas por Zod. O Effect gerencia cache, prazos, renovação de credenciais e recursos
-dos adaptadores OAuth e MCP, além das falhas e da execução sequencial no pipeline de revisão.
+dos adaptadores OAuth e MCP, além das falhas e da execução sequencial no pipeline de revisão. Cada
+tentativa de geração tem prazo de cinco minutos e o run tem prazo de trinta minutos. O consumo
+conhecido de review e judge é conservado em falhas, fallbacks e retries, sem duplicar tokens de cache.
 Consulte [Padrões de Effect na API](docs/effect.md) para os critérios de uso. Os contratos de revisão
 permanecem independentes dessas bibliotecas.
 

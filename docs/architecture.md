@@ -64,7 +64,8 @@ continuam em `camelCase`; `const` por si só não transforma uma variável local
 1. Um evento elegível de pull request chega pelo controller GitHub.
 2. O serviço de webhook deduplica pela entrega e pelo SHA do commit antes de iniciar outro Review Run.
 3. O serviço GitHub lê a Repository Policy da branch padrão e o workflow persiste o Review Run como `queued`.
-4. A fila local agenda o processamento com concorrência global de um, sem atrasar a resposta HTTP.
+4. A fila local agenda até `REVIEW_CONCURRENCY` runs ao mesmo tempo, sem atrasar a resposta HTTP.
+   O padrão é cinco runs concorrentes dentro de uma única réplica da API.
 5. O processador reivindica somente runs `queued`, muda-os para `running` e obtém o PR atual como a Installation.
 6. Se o SHA mudou, o run fica `ignored` com `superseded_head_sha`; caso contrário, o diff completo é
    dividido em Review Chunks de até 100.000 caracteres. O serviço GitHub carrega os documentos `.codekeat/`
@@ -75,7 +76,8 @@ continuam em `camelCase`; `const` por si só não transforma uma variável local
 8. A API valida e deduplica os candidatos. O juiz recebe as evidências por hunk, o contexto do PR e as
    consultas MCP associadas, sem executar ferramentas próprias. A API persiste todos os candidatos com
    seus julgamentos e um Review Report pendente na transição atômica para `completed`.
-9. A fila atualiza um comentário consultivo único do Codekeat no PR; sem Findings, publica a confirmação
+9. Uma fila separada publica os relatórios um por vez, sem esperar pelas análises em andamento.
+   A fila atualiza um comentário consultivo único do Codekeat no PR; sem Findings, publica a confirmação
    de que não encontrou problemas concretos.
 10. Falhas controladas deixam o run como `failed`, sem persistência parcial de Findings, e falhas de
     publicação ficam no Review Report para nova tentativa em evento futuro.
@@ -99,7 +101,7 @@ Os contratos de aplicação continuam assíncronos com `Promise`, sem tipos dos 
 
 O Effect é o padrão da API para falhas compostas, recursos, prazos, cache e concorrência.
 O processor usa falhas tipadas e execução sequencial para interromper a análise sem resultados parciais.
-O registro de ferramentas usa `Semaphore` para controlar o orçamento de evidências. Nos adaptadores
+O registro de ferramentas usa `Semaphore` para serializar consultas distintas e reutilizar respostas. Nos adaptadores
 OAuth e MCP, `Cache` controla o TTL e compartilha a obtenção de tokens.
 `acquireUseRelease` fecha as conexões mesmo em falhas parciais, com prazo limitado. Cada operação MCP
 abre uma sessão curta, o que acrescenta handshakes e evita estado de conexão compartilhado entre reviews.
@@ -120,12 +122,19 @@ arquivo inválido também usa o default, mas registra o aviso `invalid_repositor
 
 O diretório `.codekeat/` fornece conhecimento sobre o projeto e permanece separado da Repository Policy.
 O carregamento inicial prioriza `README.md`, `domain.md` e `integrations.md`, seguido dos arquivos com
-linhas adicionadas no diff. Todos são consultados no SHA e no repositório de origem do head, inclusive
+alterações no diff. Todos são consultados no SHA e no repositório de origem do head, inclusive
 quando o PR vem de um fork. O carregamento não troca uma revisão ausente pela branch padrão.
 
-Ausência, indisponibilidade e truncamento são estados explícitos do contexto. O contexto acompanha tanto
-a geração quanto o juiz. Documentos adicionais podem ser referenciados pelo README e consultados pelo
-MCP conforme a mudança. Os limites e as regras de proveniência estão em [Contexto de revisão](review-context.md).
+O carregador descobre documentos adicionais de `.codekeat/`, lê todos os arquivos alterados e confirma
+imports locais diretos e testes relacionados. Fontes completas pertinentes entram no prompt; as demais
+aparecem no manifesto. Ausência e indisponibilidade são estados explícitos. Não há truncamento por
+caracteres, e regras do agente ficam separadas dos dados externos.
+
+O request serializado do AI SDK passa por contagem de tokens e comparação com a capacidade real do
+modelo, incluindo ferramentas e histórico. O judge divide lotes grandes em candidatos completos;
+contexto indivisível que não cabe falha explicitamente. Cada geração tem prazo de cinco minutos e o
+run tem prazo de trinta minutos. Consumo conhecido sobrevive a falhas, fallbacks e retries. As regras
+de seleção e proveniência estão em [Contexto de revisão](review-context.md).
 
 ## Estado persistido mínimo
 
@@ -136,12 +145,12 @@ pull requests, commits e usuários.
 Um Review Run registra o repositório, número do PR, SHA analisado, status, timestamps, modelo, policy
 aplicada e erro estruturado quando houver falha. Finding registra a severidade, caminho, linha adicionada,
 título e justificativa; diffs, prompts, documentos de contexto e consultas MCP não são persistidos. Review Report mantém o
-comentário consultivo mais recente de cada PR.
+comentário consultivo de cada execução, preservando o histórico entre SHAs do PR.
 
-Um Webhook Delivery registra cada evento recebido e impede que a mesma entrega seja processada duas
-vezes. A chave única de repositório, PR e SHA impede Reviews duplicados quando eventos distintos se
-referem ao mesmo commit. Review Report é único por repositório e PR, preservando um comentário atualizado
-em vez de criar ruído a cada commit.
+Um Webhook Delivery registra cada evento recebido e impede processamento simultâneo ou repetição de
+entregas concluídas. A chave única de repositório, PR e SHA impede Reviews duplicados quando eventos
+distintos se referem ao mesmo commit. Review Report é único por Review Run. Seu marcador permite
+reencontrar o comentário após uma resposta perdida.
 
 Dashboard User e Dashboard Session pertencem à API. O painel envia as credenciais somente ao endpoint
 interno autenticado pela comunicação entre containers; a API valida a senha com Argon2id e persiste apenas

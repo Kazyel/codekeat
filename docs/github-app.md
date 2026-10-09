@@ -27,6 +27,7 @@ PRIVATE_KEY_PATH=
 WEBHOOK_SECRET=
 DATABASE_PATH=/app/data/codekeat.db
 REVIEW_MODE=advisory
+REVIEW_CONCURRENCY=5
 ALLOWED_GITHUB_ACCOUNTS=takeat,organizacao-parceira,perfil-pessoal
 GOOGLE_API_KEY=
 TAKEAT_MCP_URL=https://mcp.takeat.app/mcp
@@ -40,6 +41,9 @@ INITIAL_ADMIN_PASSWORD=
 
 `ALLOWED_GITHUB_ACCOUNTS` é obrigatória. Os logins são normalizados para minúsculas e somente contas
 — organizações ou perfis pessoais — presentes nessa lista criam Reviews.
+
+`REVIEW_CONCURRENCY` é opcional e limita quantos PRs a API analisa ao mesmo tempo. O padrão é `5`;
+o valor deve ser um inteiro positivo. Configure em `apps/api/.env`, também usado pelo Compose.
 
 Configure `PRIVATE_KEY` com o PEM ou Base64 do PEM, ou `PRIVATE_KEY_PATH` com o caminho para o arquivo
 PEM. Para desenvolvimento local, prefira `PRIVATE_KEY_PATH` e não versione o arquivo.
@@ -107,9 +111,23 @@ Não há fila externa, replay durável ou varredura periódica: após falha, a r
 entrega do webhook, outro evento pertinente ou reinicialização. Um PR desconhecido/removido falha
 fechado e nunca concede ou restaura Repository Access pelo payload assinado.
 
+Antes de decidir o acesso de um PR, o workflow aguarda a sincronização mais recente em andamento.
+Se o cache ainda não conhece a Installation ou o Repository, ou se o repositório consta como removido,
+reconcilia o inventário autenticado pelo GitHub. Uma remoção permanece fechada até o GitHub confirmar
+nova concessão. Suspensão e exclusão da Installation permanecem fechadas após a sincronização pendente.
+Entregas anteriormente
+ignoradas apenas por cache sem acesso podem ser reprocessadas; outras razões de descarte são mantidas.
+
 O endpoint é fornecido pelo Probot, que verifica a assinatura do GitHub com `WEBHOOK_SECRET`. O
 Codekeat não executa código do pull request, lê `.codekeat.yml` exclusivamente da branch padrão e trata
 resultados do MCP como dados externos não confiáveis.
 
 As permissões permitem buscar o PR e seu diff como Installation e atualizar o comentário consolidado
 do Codekeat. A App não publica Checks, status nem comentários inline bloqueantes.
+
+Cada relatório inclui um marcador com seu ID. A publicação consulta comentários de forma paginada
+e verifica a identidade autenticada da App e a autoria Bot antes de reutilizar um comentário. Um ID
+já persistido também é validado antes de atualizar. Erros nessa consulta impedem criar um comentário
+às cegas. O POST não tem retries automáticos: se o GitHub gravar o comentário e a resposta se perder,
+o retry do relatório reencontra o marcador e reutiliza o comentário existente. GETs e publicação usam
+cancelamento e um prazo total de dez segundos.
