@@ -91,7 +91,7 @@ describe("review finding evidence", () => {
 		);
 	});
 
-	it("includes MCP exchanges in the batch budget without losing evidence across chunks", () => {
+	it("keeps complete MCP exchanges without a character budget", () => {
 		const candidates = Array.from({ length: 4 }, (_, index) => ({
 			chunk: createChunk(simpleDiff(`src/file-${index}.ts`, ["+line"]), index + 1),
 			finding: { ...BASE_FINDING, path: `src/file-${index}.ts`, line: 1 },
@@ -105,13 +105,13 @@ describe("review finding evidence", () => {
 
 		const batches = createReviewFindingJudgeBatches(candidates);
 
-		expect(batches?.map((batch) => batch.findings.length)).toEqual([3, 1]);
+		expect(batches?.map((batch) => batch.findings.length)).toEqual([4]);
 		expect(
 			batches?.flatMap((batch) => batch.input.evidence.map((entry) => entry.investigation)),
 		).toEqual(candidates.map((candidate) => candidate.investigation));
 	});
 
-	it("separates batches above the evidence limit and keeps an oversized hunk intact", () => {
+	it("keeps all complete hunks in a batch regardless of their character count", () => {
 		const firstLine = `+${"a".repeat(49_000)}`;
 		const secondLine = `+${"b".repeat(49_000)}`;
 		const oversizedLine = `+${"c".repeat(90_000)}`;
@@ -136,8 +136,8 @@ describe("review finding evidence", () => {
 			},
 		]);
 
-		expect(batches).toHaveLength(3);
-		expect(batches?.[2]?.input.evidence[0]?.diff).toContain(oversizedLine);
+		expect(batches).toHaveLength(1);
+		expect(batches?.[0]?.input.evidence[2]?.diff).toContain(oversizedLine);
 	});
 });
 

@@ -8,8 +8,8 @@ import type {
 	ReviewInvestigation,
 } from "../types/review-input.types.js";
 import type { ReviewFinding } from "../types/review-run.types.js";
+import { decodeGitDiffPath } from "./review-source-paths.util.js";
 
-export const MAXIMUM_JUDGE_BATCH_EVIDENCE_LENGTH = 80_000;
 export const MAXIMUM_JUDGE_BATCH_FINDINGS = 50;
 
 export interface ChunkFindingCandidate {
@@ -87,7 +87,7 @@ function packCandidateEvidence(
 	let current: CandidateEvidence[] = [];
 
 	for (const entry of entries) {
-		if (current.length > 0 && wouldExceedBatch(current, entry)) {
+		if (current.length >= MAXIMUM_JUDGE_BATCH_FINDINGS) {
 			batches.push(toJudgeBatch(current));
 			current = [];
 		}
@@ -97,15 +97,6 @@ function packCandidateEvidence(
 		batches.push(toJudgeBatch(current));
 	}
 	return batches;
-}
-
-function wouldExceedBatch(current: readonly CandidateEvidence[], next: CandidateEvidence): boolean {
-	if (current.length >= MAXIMUM_JUDGE_BATCH_FINDINGS) {
-		return true;
-	}
-	const evidenceById = new Map(current.map((entry) => [entry.evidence.id, entry.evidence]));
-	evidenceById.set(next.evidence.id, next.evidence);
-	return evidenceLength([...evidenceById.values()]) > MAXIMUM_JUDGE_BATCH_EVIDENCE_LENGTH;
 }
 
 function toJudgeBatch(entries: readonly CandidateEvidence[]): ReviewFindingJudgeBatch {
@@ -121,12 +112,11 @@ function toJudgeBatch(entries: readonly CandidateEvidence[]): ReviewFindingJudge
 	};
 }
 
-function evidenceLength(evidence: readonly ReviewFindingEvidence[]): number {
-	return JSON.stringify(evidence).length;
-}
-
 function fileMatchesPath(file: File, path: string): boolean {
-	return file.to === path || file.from === path;
+	return (
+		(file.to !== undefined && decodeGitDiffPath(file.to) === path) ||
+		(file.from !== undefined && decodeGitDiffPath(file.from) === path)
+	);
 }
 
 function hunkContainsLine(hunk: Chunk, line: number): boolean {
