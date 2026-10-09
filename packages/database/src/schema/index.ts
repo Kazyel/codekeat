@@ -7,3 +7,5 @@ export { models } from "./model/models.js";
 export { findings } from "./review/findings.js";
 export { reviewReports } from "./review/review-reports.js";
 export { reviewRuns } from "./review/review-runs.js";
+export { reviewTelemetry } from "./review/review-telemetry.js";
+export { reviewWorkPlans, reviewWorkUnits, reviewUsageEvents } from "./review/review-work.js";
