@@ -39,6 +39,7 @@ const ENVIRONMENT_SCHEMA = z
 			.min(DASHBOARD_PASSWORD_MINIMUM_LENGTH)
 			.max(DASHBOARD_PASSWORD_MAXIMUM_LENGTH),
 		REVIEW_MODE: z.literal("advisory"),
+		REVIEW_CONCURRENCY: z.coerce.number().int().positive().default(5),
 	})
 	.refine((values) => values.PRIVATE_KEY !== undefined || values.PRIVATE_KEY_PATH !== undefined, {
 		message: "Configure PRIVATE_KEY or PRIVATE_KEY_PATH.",
@@ -46,6 +47,7 @@ const ENVIRONMENT_SCHEMA = z
 	});
 
 export interface ApplicationEnvironment {
+	readonly reviewConcurrency: number;
 	readonly databasePath: string;
 	readonly allowedGithubAccounts: ReadonlySet<string>;
 	readonly googleApiKey: string;
@@ -62,6 +64,7 @@ export function loadEnvironment(values: NodeJS.ProcessEnv): ApplicationEnvironme
 	const parsed = ENVIRONMENT_SCHEMA.parse(values);
 
 	return {
+		reviewConcurrency: parsed.REVIEW_CONCURRENCY,
 		databasePath: parsed.DATABASE_PATH,
 		allowedGithubAccounts: new Set(parsed.ALLOWED_GITHUB_ACCOUNTS),
 		googleApiKey: parsed.GOOGLE_API_KEY,

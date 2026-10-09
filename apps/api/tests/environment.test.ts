@@ -20,6 +20,25 @@ const VALID_ENVIRONMENT = {
 };
 
 describe("loadEnvironment", () => {
+	it("defaults to five concurrent reviews", () => {
+		expect(loadEnvironment(VALID_ENVIRONMENT)).toMatchObject({ reviewConcurrency: 5 });
+	});
+
+	it.each(["1", "3"])("accepts REVIEW_CONCURRENCY=%s", (value) => {
+		expect(loadEnvironment({ ...VALID_ENVIRONMENT, REVIEW_CONCURRENCY: value })).toMatchObject({
+			reviewConcurrency: Number(value),
+		});
+	});
+
+	it.each(["", "0", "-1", "1.5", "invalid", "Infinity"])(
+		"rejects invalid REVIEW_CONCURRENCY=%s",
+		(value) => {
+			expect(() =>
+				loadEnvironment({ ...VALID_ENVIRONMENT, REVIEW_CONCURRENCY: value }),
+			).toThrow("REVIEW_CONCURRENCY");
+		},
+	);
+
 	it("normalizes the allowlist for organizations and personal accounts", () => {
 		const environment = loadEnvironment(VALID_ENVIRONMENT);
 
