@@ -83,7 +83,7 @@ describe("createReviewReadController", () => {
 		database.close();
 	});
 
-	it("aggregates token usage by day, week, and month with repository filtering", async () => {
+	it("aggregates review and judge usage by day, week, and month with repository filtering", async () => {
 		const database = createTestDatabase();
 		const firstReviewRunId = randomUUID();
 		const secondReviewRunId = randomUUID();
@@ -140,18 +140,18 @@ describe("createReviewReadController", () => {
 				{
 					period: "2026-01-31",
 					repositoryFullName: "takeat/codekeat",
-					inputTokens: 100,
-					outputTokens: 20,
-					cacheTokens: 10,
-					costUsdMicros: 100,
+					inputTokens: 110,
+					outputTokens: 22,
+					cacheTokens: 11,
+					costUsdMicros: 110,
 				},
 				{
 					period: "2026-02-01",
 					repositoryFullName: "takeat/codekeat",
-					inputTokens: 200,
-					outputTokens: 40,
-					cacheTokens: 20,
-					costUsdMicros: 200,
+					inputTokens: 210,
+					outputTokens: 42,
+					cacheTokens: 21,
+					costUsdMicros: 210,
 				},
 			],
 		});
@@ -160,10 +160,10 @@ describe("createReviewReadController", () => {
 				{
 					period: "2026-01-26",
 					repositoryFullName: "takeat/codekeat",
-					inputTokens: 300,
-					outputTokens: 60,
-					cacheTokens: 30,
-					costUsdMicros: 300,
+					inputTokens: 320,
+					outputTokens: 64,
+					cacheTokens: 32,
+					costUsdMicros: 320,
 				},
 			],
 		});
@@ -175,6 +175,111 @@ describe("createReviewReadController", () => {
 
 		await close(server);
 		database.close();
+	});
+
+	it("includes known failed and ignored usage with legacy reviews without judge usage", async () => {
+		const database = createTestDatabase();
+		const legacyRunId = randomUUID();
+		const failedRunId = randomUUID();
+		const unknownUsageRunId = randomUUID();
+		const ignoredRunId = randomUUID();
+		const unknownIgnoredRunId = randomUUID();
+		prepareReviewRun(database, legacyRunId, 30);
+		prepareReviewRun(database, failedRunId, 31);
+		prepareReviewRun(database, unknownUsageRunId, 32);
+		prepareReviewRun(database, ignoredRunId, 33);
+		prepareReviewRun(database, unknownIgnoredRunId, 34);
+		completeReview(database, legacyRunId, {
+			inputTokens: 100,
+			outputTokens: 20,
+			cacheTokens: 10,
+			costUsdMicros: 100,
+		});
+		database.connection.db
+			.update(reviewRuns)
+			.set({
+				completedAt: "2026-09-03T14:30:00.000Z",
+				judgeInputTokens: null,
+				judgeOutputTokens: null,
+				judgeCacheTokens: null,
+				judgeCostUsdMicros: null,
+			})
+			.where(eq(reviewRuns.id, legacyRunId))
+			.run();
+		database.connection.db
+			.update(reviewRuns)
+			.set({
+				status: "failed",
+				completedAt: "2026-09-03T15:00:00.000Z",
+				inputTokens: 50,
+				outputTokens: 10,
+				cacheTokens: 5,
+				costUsdMicros: 50,
+				judgeInputTokens: 25,
+				judgeOutputTokens: 5,
+				judgeCacheTokens: 2,
+				judgeCostUsdMicros: 25,
+			})
+			.where(eq(reviewRuns.id, failedRunId))
+			.run();
+		database.connection.db
+			.update(reviewRuns)
+			.set({ status: "failed", completedAt: "2026-09-04T15:00:00.000Z" })
+			.where(eq(reviewRuns.id, unknownUsageRunId))
+			.run();
+		database.connection.db
+			.update(reviewRuns)
+			.set({
+				status: "ignored",
+				completedAt: "2026-09-03T16:00:00.000Z",
+				inputTokens: 25,
+				outputTokens: 5,
+				cacheTokens: 2,
+				costUsdMicros: 25,
+				judgeInputTokens: 5,
+				judgeOutputTokens: 1,
+				judgeCacheTokens: 0,
+				judgeCostUsdMicros: 5,
+			})
+			.where(eq(reviewRuns.id, ignoredRunId))
+			.run();
+		database.connection.db
+			.update(reviewRuns)
+			.set({ status: "ignored", completedAt: "2026-09-05T15:00:00.000Z" })
+			.where(eq(reviewRuns.id, unknownIgnoredRunId))
+			.run();
+		const server = createServer((request, response) => {
+			if (
+				!createReviewUsageController(database.reviewQueryRepository, "internal-token")(
+					request,
+					response,
+				)
+			) {
+				response.writeHead(404).end();
+			}
+		});
+		await listen(server);
+		try {
+			const response = await fetch(
+				`http://127.0.0.1:${port(server)}/api/v1/review-usage?groupBy=day`,
+				{ headers: { authorization: "Bearer internal-token" } },
+			);
+			expect(await response.json()).toEqual({
+				usage: [
+					{
+						period: "2026-09-03",
+						repositoryFullName: "takeat/codekeat",
+						inputTokens: 205,
+						outputTokens: 41,
+						cacheTokens: 19,
+						costUsdMicros: 205,
+					},
+				],
+			});
+		} finally {
+			await close(server);
+			database.close();
+		}
 	});
 
 	it("aggregates judge quality without multiplying run usage by findings", async () => {

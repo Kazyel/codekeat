@@ -5,7 +5,7 @@ import {
 	reviewReports,
 	reviewRuns,
 } from "@codekeat/database";
-import { and, asc, desc, eq, isNotNull, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, or, sql, type SQL } from "drizzle-orm";
 
 import type {
 	ReviewQualitySummary,
@@ -87,10 +87,10 @@ export class ReviewQueryRepository {
 			.select({
 				period,
 				repositoryFullName: REPOSITORY_FULL_NAME,
-				inputTokens: sql<number>`coalesce(sum(${reviewRuns.inputTokens}), 0)`,
-				outputTokens: sql<number>`coalesce(sum(${reviewRuns.outputTokens}), 0)`,
-				cacheTokens: sql<number>`coalesce(sum(${reviewRuns.cacheTokens}), 0)`,
-				costUsdMicros: sql<number>`coalesce(sum(${reviewRuns.costUsdMicros}), 0)`,
+				inputTokens: sql<number>`coalesce(sum(${reviewRuns.inputTokens}), 0) + coalesce(sum(${reviewRuns.judgeInputTokens}), 0)`,
+				outputTokens: sql<number>`coalesce(sum(${reviewRuns.outputTokens}), 0) + coalesce(sum(${reviewRuns.judgeOutputTokens}), 0)`,
+				cacheTokens: sql<number>`coalesce(sum(${reviewRuns.cacheTokens}), 0) + coalesce(sum(${reviewRuns.judgeCacheTokens}), 0)`,
+				costUsdMicros: sql<number>`coalesce(sum(${reviewRuns.costUsdMicros}), 0) + coalesce(sum(${reviewRuns.judgeCostUsdMicros}), 0)`,
 			})
 			.from(reviewRuns)
 			.innerJoin(
@@ -99,9 +99,9 @@ export class ReviewQueryRepository {
 			)
 			.where(
 				and(
-					eq(reviewRuns.status, "completed"),
+					inArray(reviewRuns.status, ["completed", "failed", "ignored"]),
 					isNotNull(reviewRuns.completedAt),
-					isNotNull(reviewRuns.inputTokens),
+					or(isNotNull(reviewRuns.inputTokens), isNotNull(reviewRuns.judgeInputTokens)),
 					repositoryFullName === undefined
 						? undefined
 						: eq(REPOSITORY_FULL_NAME, repositoryFullName),

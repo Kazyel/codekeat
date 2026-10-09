@@ -4,6 +4,7 @@ import { ChevronDown, Table2 } from "lucide-react";
 import { useState } from "react";
 import { Bar, CartesianGrid, ComposedChart, Legend, Line, Tooltip, XAxis, YAxis } from "recharts";
 
+import { mergeAnalytics, type AnalyticsPoint } from "@/features/analytics/analytics-data";
 import { EmptyState, ErrorState } from "@/components/content-states";
 import { PageHeader } from "@/components/page-header";
 import { CostIcon, FindingsIcon, ReviewIcon } from "@/components/product-icons";
@@ -412,79 +413,6 @@ function ChartPanel({
 			<div className="h-64 px-2 pb-4 sm:h-72 sm:px-4">{children}</div>
 		</section>
 	);
-}
-
-interface AnalyticsPoint {
-	readonly period: string;
-	readonly tokens: number;
-	readonly cost: number;
-	readonly accepted: number;
-	readonly completed: number;
-	readonly approval: number | null;
-}
-
-function mergeAnalytics(
-	usage: readonly {
-		readonly period: string;
-		readonly inputTokens: number;
-		readonly outputTokens: number;
-		readonly cacheTokens: number;
-		readonly costUsdMicros: number;
-	}[],
-	quality: readonly {
-		readonly period: string;
-		readonly completedRunCount: number;
-		readonly acceptedFindingCount: number;
-		readonly evaluatedFindingCount: number;
-	}[],
-): readonly AnalyticsPoint[] {
-	const result = new Map<
-		string,
-		{
-			period: string;
-			tokens: number;
-			cost: number;
-			accepted: number;
-			completed: number;
-			evaluated: number;
-		}
-	>();
-	for (const item of usage) {
-		const point = result.get(item.period) ?? {
-			period: item.period,
-			tokens: 0,
-			cost: 0,
-			accepted: 0,
-			completed: 0,
-			evaluated: 0,
-		};
-		point.tokens += item.inputTokens + item.outputTokens + item.cacheTokens;
-		point.cost += item.costUsdMicros;
-		result.set(item.period, point);
-	}
-	for (const item of quality) {
-		const point = result.get(item.period) ?? {
-			period: item.period,
-			tokens: 0,
-			cost: 0,
-			accepted: 0,
-			completed: 0,
-			evaluated: 0,
-		};
-		point.accepted += item.acceptedFindingCount;
-		point.completed += item.completedRunCount;
-		point.evaluated += item.evaluatedFindingCount;
-		result.set(item.period, point);
-	}
-	return [...result.values()]
-		.toSorted((left, right) => left.period.localeCompare(right.period))
-		.map((point) => ({
-			...point,
-			approval:
-				point.evaluated === 0
-					? null
-					: Math.round((point.accepted / point.evaluated) * 10_000),
-		}));
 }
 
 function UsageChart({ data }: { readonly data: readonly AnalyticsPoint[] }) {
