@@ -40,6 +40,14 @@ const ENVIRONMENT_SCHEMA = z
 			.max(DASHBOARD_PASSWORD_MAXIMUM_LENGTH),
 		REVIEW_MODE: z.literal("advisory"),
 		REVIEW_CONCURRENCY: z.coerce.number().int().positive().default(5),
+		REVIEW_UNIT_CONCURRENCY: z.coerce.number().int().positive().default(2),
+		REVIEW_MODEL_CONCURRENCY: z.coerce.number().int().positive().default(5),
+		GOOGLE_REQUESTS_PER_MINUTE: OPTIONAL_ENVIRONMENT_VALUE.pipe(
+			z.coerce.number<string | undefined>().int().positive().optional(),
+		),
+		GOOGLE_INPUT_TOKENS_PER_MINUTE: OPTIONAL_ENVIRONMENT_VALUE.pipe(
+			z.coerce.number<string | undefined>().int().positive().optional(),
+		),
 	})
 	.refine((values) => values.PRIVATE_KEY !== undefined || values.PRIVATE_KEY_PATH !== undefined, {
 		message: "Configure PRIVATE_KEY or PRIVATE_KEY_PATH.",
@@ -48,6 +56,10 @@ const ENVIRONMENT_SCHEMA = z
 
 export interface ApplicationEnvironment {
 	readonly reviewConcurrency: number;
+	readonly reviewUnitConcurrency: number;
+	readonly reviewModelConcurrency: number;
+	readonly googleRequestsPerMinute: number | null;
+	readonly googleInputTokensPerMinute: number | null;
 	readonly databasePath: string;
 	readonly allowedGithubAccounts: ReadonlySet<string>;
 	readonly googleApiKey: string;
@@ -65,6 +77,10 @@ export function loadEnvironment(values: NodeJS.ProcessEnv): ApplicationEnvironme
 
 	return {
 		reviewConcurrency: parsed.REVIEW_CONCURRENCY,
+		reviewUnitConcurrency: parsed.REVIEW_UNIT_CONCURRENCY,
+		reviewModelConcurrency: parsed.REVIEW_MODEL_CONCURRENCY,
+		googleRequestsPerMinute: parsed.GOOGLE_REQUESTS_PER_MINUTE ?? null,
+		googleInputTokensPerMinute: parsed.GOOGLE_INPUT_TOKENS_PER_MINUTE ?? null,
 		databasePath: parsed.DATABASE_PATH,
 		allowedGithubAccounts: new Set(parsed.ALLOWED_GITHUB_ACCOUNTS),
 		googleApiKey: parsed.GOOGLE_API_KEY,

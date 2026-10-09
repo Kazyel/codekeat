@@ -43,6 +43,21 @@ export class ReviewReportRepository {
 		return this.savePendingReport(this.connection.db, run, reviewRunId, reviewReportId, now);
 	}
 
+	/** Marker-based GitHub publication can safely recover an interrupted acknowledgement. */
+	recoverReviewReports(): readonly string[] {
+		this.connection.db
+			.update(reviewReports)
+			.set({ status: "pending", updatedAt: currentTimestamp() })
+			.where(eq(reviewReports.status, "publishing"))
+			.run();
+		return this.connection.db
+			.select({ id: reviewReports.id })
+			.from(reviewReports)
+			.where(eq(reviewReports.status, "pending"))
+			.all()
+			.map((row) => row.id);
+	}
+
 	claimReviewReport(reviewReportId: string): PublishableReviewReport | null {
 		const claim = this.connection.db
 			.update(reviewReports)

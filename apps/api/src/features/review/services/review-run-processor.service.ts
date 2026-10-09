@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 
-import { Data, Effect, Exit, Result } from "effect";
+import { z } from "zod";
+import { Cause, Data, Effect, Exit, Result } from "effect";
 import type { Logger } from "pino";
 
 import {
 	ReviewContextCapacityExceeded,
+	ReviewSourceCoverageIncomplete,
 	ReviewModelResponseError,
 } from "../errors/review-model.error.js";
 import type { ReviewRunRepository } from "../repositories/review-run.repository.js";
@@ -18,6 +20,8 @@ import type {
 	ReviewModel,
 	ReviewModelResult,
 	ReviewTokenUsage,
+	ReviewExecution,
+	ReviewUsageEvent,
 } from "../types/review-input.types.js";
 import type {
 	ReviewRunErrorCode,
@@ -31,7 +35,32 @@ import {
 	type ReviewFindingJudgeBatch,
 } from "../utils/review-finding-evidence.util.js";
 import { ReviewUsageLedger } from "../utils/review-usage-ledger.util.js";
-const REVIEW_STRATEGY_VERSION = "repository-context-v5";
+import type { ReviewSourceCatalog } from "../types/review-source.types.js";
+import { createReviewMetric, type ReviewMetric } from "../types/review-metrics.types.js";
+import type { ReviewTelemetryRepository } from "../repositories/review-telemetry.repository.js";
+import type { ReviewWorkRepository } from "../repositories/review-work.repository.js";
+import { ReviewWorkExecutor } from "./review-work-executor.service.js";
+import {
+	encodeReviewChunk,
+	decodeReviewChunk,
+	decodeReviewResult,
+	decodeJudgeBatch,
+	decodeStoredFindings,
+} from "../utils/review-work-codec.util.js";
+import {
+	planReviewChunks,
+	reviewPlanFingerprint,
+	splitReviewChunk,
+	assertReviewCoverage,
+} from "../utils/review-work-planner.util.js";
+const REVIEW_STRATEGY_VERSION = "repository-context-v6";
+export interface ReviewProcessingOptions {
+	readonly unitConcurrency: number;
+	readonly getModelCapacity: (
+		model: string,
+		signal: AbortSignal,
+	) => Promise<{ readonly inputTokenLimit: number }>;
+}
 const REVIEW_RUN_TIMEOUT_MS = 30 * 60 * 1_000;
 const EMPTY_USAGE: ReviewTokenUsage = {
 	inputTokens: 0,
@@ -59,17 +88,32 @@ export class ReviewRunProcessorService {
 		private readonly inputSource: ReviewInputSource,
 		private readonly model: ReviewModel,
 		private readonly judge: ReviewFindingJudge,
-		private readonly queue: Pick<ReviewWorkQueue, "enqueueReport">,
+		private readonly queue: ReviewWorkQueue,
 		private readonly logger: Logger,
+		private readonly work: ReviewWorkRepository,
+		private readonly telemetry: ReviewTelemetryRepository,
+		private readonly options: ReviewProcessingOptions,
 	) {}
 
 	async process(reviewRunId: string): Promise<void> {
+		const queuedAt = this.repository.queuedAt(reviewRunId);
 		const run = this.repository.claimQueuedReviewRun(reviewRunId);
 		if (run === null) {
 			return;
 		}
 
 		const startedAt = performance.now();
+		const previousDuration = this.repository.readReviewRunUsage(run.id).processingDurationMs;
+		this.work.resetInterrupted(run.id);
+		this.telemetry.record(
+			run.id,
+			createReviewMetric({
+				phase: "queue",
+				scope: "phase",
+				durationMs: queuedAt === null ? 0 : Date.now() - Date.parse(queuedAt),
+				outcome: "success",
+			}),
+		);
 		this.logger.info({ modelName: run.model.apiName, reviewRunId }, "review_run.started");
 
 		const ledger = new ReviewUsageLedger(this.repository.readReviewRunUsage(run.id), run.model);
@@ -82,16 +126,45 @@ export class ReviewRunProcessorService {
 							new ReviewProcessingFailure({ errorCode: "review_run_timeout" }),
 						),
 				}),
+				Effect.catchDefect(() =>
+					Effect.fail(
+						new ReviewProcessingFailure({ errorCode: "review_checkpoint_unavailable" }),
+					),
+				),
 				Effect.result,
 			),
 		);
 		if (Result.isFailure(analysis)) {
-			this.fail(run, analysis.failure.errorCode, ledger, startedAt);
+			await this.handleFailure(run, analysis.failure, ledger, startedAt, previousDuration);
 			return;
 		}
-		const outcome = analysis.success;
+		await this.applyOutcome(run, analysis.success, ledger, startedAt);
+	}
+
+	private async handleFailure(
+		run: RunnableReviewRun,
+		failure: ReviewProcessingFailure,
+		ledger: ReviewUsageLedger,
+		startedAt: number,
+		previousDuration: number,
+	): Promise<void> {
+		if (failure.errorCode !== "review_run_timeout") {
+			this.fail(run, failure.errorCode, ledger, startedAt);
+			return;
+		}
+		this.work.resetInterrupted(run.id);
+		this.repository.yieldReviewRun(run.id, previousDuration + elapsedMilliseconds(startedAt));
+		await this.queue.enqueueReview(run.id);
+	}
+
+	private async applyOutcome(
+		run: RunnableReviewRun,
+		outcome: AnalysisOutcome,
+		ledger: ReviewUsageLedger,
+		startedAt: number,
+	): Promise<void> {
 		if (outcome.kind === "ignored") {
-			this.repository.ignoreReviewRun(reviewRunId, outcome.ignoreReason);
+			this.repository.ignoreReviewRun(run.id, outcome.ignoreReason);
 			this.logIgnoredRun(run, outcome.ignoreReason, startedAt);
 			return;
 		}
@@ -112,17 +185,22 @@ export class ReviewRunProcessorService {
 				"context_load",
 				this.loadInput(run),
 				inputStageOutcome,
+				inputStageMetric,
 			);
 			if (loaded.kind !== "ready") return loaded;
+			this.work.ensurePlan(
+				run.id,
+				reviewPlanFingerprint(loaded.input, run.model.apiName, REVIEW_STRATEGY_VERSION),
+			);
 			const candidates = yield* this.observeStage(
 				run,
 				"candidate_generation",
-				this.generateCandidates(run.model, loaded.input, ledger),
+				this.generateCandidates(run.model, loaded.input, loaded.sources, ledger),
 			);
 			const findings = yield* this.observeStage(
 				run,
 				"candidate_judgment",
-				this.judgeCandidates(run.model, loaded.input, candidates, ledger),
+				this.judgeCandidates(run.model, loaded.input, loaded.sources, candidates, ledger),
 			);
 			return { kind: "completed", input: loaded.input, findings } as const;
 		});
@@ -133,12 +211,23 @@ export class ReviewRunProcessorService {
 		stage: "context_load" | "candidate_generation" | "candidate_judgment",
 		program: Effect.Effect<A, ReviewProcessingFailure>,
 		describeOutcome: (value: A) => ReviewStageOutcome = () => "completed",
+		describeMetric: (value: A) => Partial<ReviewMetric> = () => ({}),
 	): Effect.Effect<A, ReviewProcessingFailure> {
 		return Effect.suspend(() => {
 			const startedAt = performance.now();
 			return program.pipe(
 				Effect.onExit((exit) =>
-					Effect.sync(() =>
+					Effect.sync(() => {
+						this.telemetry.record(
+							run.id,
+							createReviewMetric({
+								phase: stagePhase(stage),
+								scope: "phase",
+								durationMs: elapsedMilliseconds(startedAt),
+								outcome: stageMetricOutcome(exit, describeOutcome),
+								...(Exit.isSuccess(exit) ? describeMetric(exit.value) : {}),
+							}),
+						);
 						this.logger.info(
 							{
 								reviewRunId: run.id,
@@ -149,8 +238,8 @@ export class ReviewRunProcessorService {
 									: "failed",
 							},
 							"review_run.stage_finished",
-						),
-					),
+						);
+					}),
 				),
 			);
 		});
@@ -162,7 +251,9 @@ export class ReviewRunProcessorService {
 		ledger: ReviewUsageLedger,
 		startedAt: number,
 	): Promise<void> {
-		const durationMs = elapsedMilliseconds(startedAt);
+		const durationMs =
+			this.repository.readReviewRunUsage(run.id).processingDurationMs +
+			elapsedMilliseconds(startedAt);
 		const reviewReportId = this.repository.completeReviewRun(run.id, {
 			reviewUsage: ledger.usage("review") ?? EMPTY_USAGE,
 			judgeUsage: ledger.usage("judge") ?? EMPTY_USAGE,
@@ -170,7 +261,7 @@ export class ReviewRunProcessorService {
 			reviewReportId: randomUUID(),
 			reviewStrategyVersion: REVIEW_STRATEGY_VERSION,
 			changedLineCount: countChangedLines(outcome.input),
-			reviewChunkCount: outcome.input.chunks.length,
+			reviewChunkCount: this.work.listLeaves(run.id, "review").length,
 			judgeCallCount: ledger.judgeCallCount(),
 			processingDurationMs: durationMs,
 		});
@@ -190,25 +281,64 @@ export class ReviewRunProcessorService {
 	private generateCandidates(
 		model: RunnableReviewRun["model"],
 		input: ReviewInput,
+		sources: ReviewSourceCatalog | null,
 		ledger: ReviewUsageLedger,
 	): Effect.Effect<readonly ChunkFindingCandidate[], ReviewProcessingFailure> {
 		return Effect.gen({ self: this }, function* () {
-			const results = yield* Effect.forEach(
+			const capacity = yield* Effect.tryPromise({
+				try: (signal) => this.options.getModelCapacity(model.apiName, signal),
+				catch: () =>
+					new ReviewProcessingFailure({ errorCode: "gemini_capacity_unavailable" }),
+			});
+			const planned = planReviewChunks(input, capacity.inputTokenLimit);
+			this.work.ensureUnits(input.reviewRunId, "review", planned.map(encodeReviewChunk));
+			const executor = new ReviewWorkExecutor(this.work, this.options.unitConcurrency);
+			const results = yield* executor.execute(
+				this.work.listLeaves(input.reviewRunId, "review"),
+				{
+					run: (unit) => {
+						const chunk = {
+							...decodeReviewChunk(unit.payloadJson),
+							index: unit.ordinal + 1,
+							total: Math.max(
+								decodeReviewChunk(unit.payloadJson).total,
+								unit.ordinal + 1,
+							),
+						};
+						return this.reviewChunk(model, input, chunk, sources, ledger, unit.id).pipe(
+							Effect.map((result) => ({ chunk, result })),
+						);
+					},
+					encode: (value) =>
+						JSON.stringify({
+							chunk: encodeReviewChunk(value.chunk),
+							result: value.result,
+						}),
+					decode: (json) => decodeReviewCheckpoint(json),
+					split: (unit, error) => {
+						if (!isDivisibleFailure(error)) return null;
+						return (
+							splitReviewChunk(decodeReviewChunk(unit.payloadJson))?.map(
+								encodeReviewChunk,
+							) ?? null
+						);
+					},
+				},
+			);
+			assertReviewCoverage(
 				input.chunks,
-				(chunk) =>
-					this.reviewChunk(model, input, chunk, ledger).pipe(
-						Effect.map((result) => ({ chunk, result })),
-					),
-				{ concurrency: 1 },
+				results.map((value) => value.chunk),
 			);
 			return deduplicateCandidates(
-				results.flatMap(({ chunk, result }) =>
-					result.findings.map((finding) => ({
-						chunk,
-						finding,
-						investigation: result.investigation,
-					})),
-				),
+				[...results]
+					.sort((a, b) => a.chunk.index - b.chunk.index)
+					.flatMap(({ chunk, result }) =>
+						result.findings.map((finding) => ({
+							chunk,
+							finding,
+							investigation: result.investigation,
+						})),
+					),
 			);
 		});
 	}
@@ -216,6 +346,7 @@ export class ReviewRunProcessorService {
 	private judgeCandidates(
 		model: RunnableReviewRun["model"],
 		input: ReviewInput,
+		sources: ReviewSourceCatalog | null,
 		candidates: readonly ChunkFindingCandidate[],
 		ledger: ReviewUsageLedger,
 	): Effect.Effect<readonly StoredFinding[], ReviewProcessingFailure> {
@@ -226,43 +357,44 @@ export class ReviewRunProcessorService {
 					errorCode: "finding_location_invalid",
 				});
 			}
-			const results = yield* Effect.forEach(
-				batches,
-				(batch) => this.judgeWithinCapacity(model, input, batch, ledger),
-				{ concurrency: 1 },
+			this.work.ensureUnits(
+				input.reviewRunId,
+				"judge",
+				batches.map((batch) => JSON.stringify(batch)),
+			);
+			const executor = new ReviewWorkExecutor(this.work, this.options.unitConcurrency);
+			const results = yield* executor.execute(
+				this.work.listLeaves(input.reviewRunId, "judge"),
+				{
+					run: (unit) =>
+						this.judgeBatch(
+							model,
+							input,
+							decodeJudgeBatch(unit.payloadJson),
+							sources,
+							ledger,
+							unit.id,
+						),
+					encode: (value) => JSON.stringify(value),
+					decode: decodeStoredFindings,
+					split: (unit, error) => {
+						const batch = decodeJudgeBatch(unit.payloadJson);
+						if (!isDivisibleFailure(error) || batch.findings.length <= 1) return null;
+						return splitJudgeBatch(batch).map((part) => JSON.stringify(part));
+					},
+				},
 			);
 			return results.flat();
 		});
-	}
-
-	private judgeWithinCapacity(
-		model: RunnableReviewRun["model"],
-		input: ReviewInput,
-		batch: ReviewFindingJudgeBatch,
-		ledger: ReviewUsageLedger,
-	): Effect.Effect<readonly StoredFinding[], ReviewProcessingFailure> {
-		return this.judgeBatch(model, input, batch, ledger).pipe(
-			Effect.catch((error) => {
-				if (
-					error.errorCode !== "review_context_capacity_exceeded" ||
-					batch.findings.length <= 1
-				)
-					return Effect.fail(error);
-				const halves = splitJudgeBatch(batch);
-				return Effect.forEach(
-					halves,
-					(part) => this.judgeWithinCapacity(model, input, part, ledger),
-					{ concurrency: 1 },
-				).pipe(Effect.map((results) => results.flat()));
-			}),
-		);
 	}
 
 	private judgeBatch(
 		model: RunnableReviewRun["model"],
 		input: ReviewInput,
 		batch: ReviewFindingJudgeBatch,
+		sources: ReviewSourceCatalog | null,
 		ledger: ReviewUsageLedger,
+		unitId: string,
 	): Effect.Effect<readonly StoredFinding[], ReviewProcessingFailure> {
 		return Effect.gen({ self: this }, function* () {
 			const fields = {
@@ -272,10 +404,12 @@ export class ReviewRunProcessorService {
 			};
 			const result = yield* Effect.tryPromise({
 				try: (signal) =>
-					this.judge.judge(model, input, batch.input, {
-						signal,
-						recordUsage: (event) => ledger.record(event),
-					}),
+					this.judge.judge(
+						model,
+						input,
+						batch.input,
+						this.execution(input.reviewRunId, signal, sources, ledger, unitId),
+					),
 				catch: (error) => this.modelFailure(error, "judge", fields),
 			});
 			const validation = validateJudgments(batch.findings, result.judgments);
@@ -302,7 +436,10 @@ export class ReviewRunProcessorService {
 		run: RunnableReviewRun,
 	): Effect.Effect<ReviewInputLoadResult, ReviewProcessingFailure> {
 		return Effect.tryPromise({
-			try: (signal) => this.inputSource.load(run, signal),
+			try: (signal) =>
+				this.inputSource.load(run, signal, (metric) =>
+					this.telemetry.record(run.id, metric),
+				),
 			catch: () => new ReviewProcessingFailure({ errorCode: "github_diff_unavailable" }),
 		});
 	}
@@ -311,15 +448,19 @@ export class ReviewRunProcessorService {
 		model: RunnableReviewRun["model"],
 		input: ReviewInput,
 		chunk: ReviewInput["chunks"][number],
+		sources: ReviewSourceCatalog | null,
 		ledger: ReviewUsageLedger,
+		unitId: string,
 	): Effect.Effect<ReviewModelResult, ReviewProcessingFailure> {
 		return Effect.gen({ self: this }, function* () {
 			const result = yield* Effect.tryPromise({
 				try: (signal) =>
-					this.model.review(model, input, chunk, {
-						signal,
-						recordUsage: (event) => ledger.record(event),
-					}),
+					this.model.review(
+						model,
+						input,
+						chunk,
+						this.execution(input.reviewRunId, signal, sources, ledger, unitId),
+					),
 				catch: (error) =>
 					this.modelFailure(error, "review", {
 						chunkIndex: chunk.index,
@@ -336,24 +477,41 @@ export class ReviewRunProcessorService {
 		});
 	}
 
+	private execution(
+		runId: string,
+		signal: AbortSignal,
+		sources: ReviewSourceCatalog | null,
+		ledger: ReviewUsageLedger,
+		unitId: string,
+	): ReviewExecution {
+		return {
+			signal,
+			sources,
+			recordUsage: (event: ReviewUsageEvent) => {
+				if (this.work.recordUsage(runId, event)) ledger.record(event);
+			},
+			recordMetric: (metric) => this.telemetry.record(runId, { ...metric, unitId }),
+		};
+	}
+
 	private modelFailure(
 		error: unknown,
 		stage: "review" | "judge",
 		fields: Readonly<Record<string, string | number>>,
 	): ReviewProcessingFailure {
+		if (error instanceof ReviewSourceCoverageIncomplete)
+			return new ReviewProcessingFailure({ errorCode: "review_source_coverage_incomplete" });
 		if (error instanceof ReviewContextCapacityExceeded) {
 			return new ReviewProcessingFailure({ errorCode: "review_context_capacity_exceeded" });
 		}
 		if (!(error instanceof ReviewModelResponseError)) {
 			return new ReviewProcessingFailure({
-				errorCode:
-					stage === "judge" ? "gemini_judge_request_failed" : "gemini_request_failed",
+				errorCode: requestFailureCode(stage),
 			});
 		}
 		this.logger.warn({ ...fields, reason: error.issue }, `gemini_${stage}.invalid_response`);
 		return new ReviewProcessingFailure({
-			errorCode:
-				stage === "judge" ? "gemini_judge_invalid_response" : "gemini_invalid_response",
+			errorCode: responseFailureCode(stage),
 		});
 	}
 
@@ -379,7 +537,9 @@ export class ReviewRunProcessorService {
 			reviewUsage: ledger.usage("review"),
 			judgeUsage: ledger.usage("judge"),
 			judgeCallCount: ledger.judgeCallCount(),
-			processingDurationMs: elapsedMilliseconds(startedAt),
+			processingDurationMs:
+				this.repository.readReviewRunUsage(run.id).processingDurationMs +
+				elapsedMilliseconds(startedAt),
 		});
 		this.logger.warn(
 			{
@@ -521,4 +681,68 @@ function countChangedLines(input: ReviewInput): number {
 
 function elapsedMilliseconds(startedAt: number): number {
 	return Math.round(performance.now() - startedAt);
+}
+
+function metricOutcome(outcome: ReviewStageOutcome): "success" | "failed" | "ignored" {
+	return outcome === "completed" ? "success" : outcome;
+}
+const reviewCheckpointSchema = z
+	.object({ chunk: z.string(), result: z.object({}).passthrough() })
+	.strict();
+function decodeReviewCheckpoint(json: string): {
+	readonly chunk: ReviewInput["chunks"][number];
+	readonly result: ReviewModelResult;
+} {
+	const checkpoint = reviewCheckpointSchema.parse(JSON.parse(json));
+	return {
+		chunk: decodeReviewChunk(checkpoint.chunk),
+		result: decodeReviewResult(JSON.stringify(checkpoint.result)),
+	};
+}
+
+function stagePhase(
+	stage: "context_load" | "candidate_generation" | "candidate_judgment",
+): ReviewMetric["phase"] {
+	const phases = {
+		context_load: "input",
+		candidate_generation: "generation",
+		candidate_judgment: "judge",
+	} as const;
+	return phases[stage];
+}
+function inputStageMetric(loaded: ReviewInputLoadResult): Partial<ReviewMetric> {
+	if (loaded.kind !== "ready") return {};
+	return {
+		diffBytes: loaded.input.chunks.reduce(
+			(total, chunk) => total + Buffer.byteLength(chunk.diff),
+			0,
+		),
+		sourceBytes: loaded.input.repositoryContext.files.reduce(
+			(bytes, file) => bytes + (file.kind === "loaded" ? Buffer.byteLength(file.content) : 0),
+			0,
+		),
+		sourceCount: loaded.input.repositoryContext.files.length,
+	};
+}
+
+function isDivisibleFailure(error: ReviewProcessingFailure): boolean {
+	return (
+		error.errorCode === "review_context_capacity_exceeded" ||
+		error.errorCode === "review_source_coverage_incomplete"
+	);
+}
+
+function requestFailureCode(stage: "review" | "judge"): ReviewRunErrorCode {
+	return stage === "judge" ? "gemini_judge_request_failed" : "gemini_request_failed";
+}
+function responseFailureCode(stage: "review" | "judge"): ReviewRunErrorCode {
+	return stage === "judge" ? "gemini_judge_invalid_response" : "gemini_invalid_response";
+}
+
+function stageMetricOutcome<A>(
+	exit: Exit.Exit<A, ReviewProcessingFailure>,
+	describe: (value: A) => ReviewStageOutcome,
+): ReviewMetric["outcome"] {
+	if (Exit.isSuccess(exit)) return metricOutcome(describe(exit.value));
+	return Cause.hasInterruptsOnly(exit.cause) ? "cancelled" : "failed";
 }

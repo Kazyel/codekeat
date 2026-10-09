@@ -18,3 +18,9 @@ export class ReviewContextCapacityExceeded extends Data.TaggedError(
 	readonly inputTokens: number;
 	readonly inputTokenLimit: number;
 }> {}
+
+export class ReviewSourceCoverageIncomplete extends Data.TaggedError(
+	"ReviewSourceCoverageIncomplete",
+)<{
+	readonly reason: "diff_not_read" | "judge_evidence_not_read";
+}> {}

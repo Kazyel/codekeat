@@ -3,7 +3,12 @@ import { jsonSchema, tool, type ToolSet } from "ai";
 import { Effect, Semaphore } from "effect";
 import { z } from "zod";
 
-import { type ReviewContextExchange, ReviewModelResponseError } from "#features/review";
+import {
+	type ReviewContextExchange,
+	type ReviewSourceCatalog,
+	ReviewModelResponseError,
+} from "#features/review";
+import { captureModelMetrics } from "./review-model-metrics.util.js";
 import {
 	type McpJsonObject,
 	type TakeatMcpContextSource,
@@ -23,6 +28,7 @@ type ContextFailure =
 
 /** One attempt owns complete, deduplicated evidence and its first failure. */
 export class ReviewContextTool {
+	private readonly metrics = captureModelMetrics();
 	private readonly recorded: ReviewContextExchange[] = [];
 	private readonly responses = new Map<string, McpJsonObject>();
 	private readonly calls = Semaphore.makeUnsafe(1);
@@ -31,6 +37,7 @@ export class ReviewContextTool {
 	constructor(
 		private readonly source: TakeatMcpContextSource,
 		private readonly signal?: AbortSignal,
+		private readonly catalog: ReviewSourceCatalog | null = null,
 	) {}
 
 	get exchanges(): readonly ReviewContextExchange[] {
@@ -77,6 +84,7 @@ export class ReviewContextTool {
 
 	callTool(name: string, args: McpJsonObject): Promise<McpJsonObject> {
 		// The AI SDK executes calls in parallel. Serialize admission and recording.
+		const startedAt = performance.now();
 		return Effect.runPromise(
 			this.calls.withPermit(
 				Effect.tryPromise({
@@ -86,31 +94,79 @@ export class ReviewContextTool {
 					Effect.tapError((error) =>
 						Effect.sync(() => {
 							this.failure ??= error;
+							this.metrics.record({
+								phase: "tool",
+								durationMs: performance.now() - startedAt,
+								outcome: this.signal?.aborted ? "cancelled" : "failed",
+								requestCount: 1,
+							});
 						}),
 					),
 				),
 			),
+			{ signal: this.signal },
 		);
 	}
 
 	private async callAndRecord(name: string, args: McpJsonObject): Promise<McpJsonObject> {
 		this.throwIfFailed();
+		const startedAt = performance.now();
 		const argumentsJson = JSON.stringify(args);
 		const key = JSON.stringify([name, orderedJson(args)]);
 		const cached = this.responses.get(key);
-		if (cached !== undefined) return cached;
+		if (cached !== undefined) {
+			this.metrics.record({
+				phase: "tool",
+				durationMs: performance.now() - startedAt,
+				outcome: "success",
+				cacheHitCount: 1,
+			});
+			return cached;
+		}
 		if (this.recorded.length >= MAXIMUM_EXCHANGES) {
 			throw new ReviewModelResponseError("context_response_invalid");
 		}
 		const response = readableResponse(await this.source.callTool(name, args, this.signal));
-		const responseJson = JSON.stringify(response);
+		const delivered = await this.retainResponse(name, argumentsJson, response);
+		const responseJson = JSON.stringify(delivered);
 		this.recorded.push({
 			tool: name,
 			argumentsJson,
 			responseJson,
 		});
-		this.responses.set(key, response);
-		return response;
+		this.responses.set(key, delivered);
+		this.metrics.record({
+			phase: "tool",
+			durationMs: performance.now() - startedAt,
+			outcome: "success",
+			requestCount: 1,
+			sourceBytes: Buffer.byteLength(JSON.stringify(response)),
+			sourceCount: null,
+		});
+		return delivered;
+	}
+
+	private async retainResponse(
+		name: string,
+		argumentsJson: string,
+		response: McpJsonObject,
+	): Promise<McpJsonObject> {
+		if (this.catalog === null) return response;
+		const source = await this.catalog.recordInvestigation(
+			name,
+			argumentsJson,
+			JSON.stringify(response),
+			this.signal ?? new AbortController().signal,
+		);
+		return {
+			kind: "investigation_reference",
+			source: { ...source },
+			contextStatus: "error" in response ? "unavailable" : "available",
+			readWith: "source_read",
+			range: { kind: "lines", startLine: 1, lineCount: 40 },
+			provenance:
+				"MCP response; repository revision is unconfirmed unless explicitly present in the original response.",
+		};
 	}
 }
 

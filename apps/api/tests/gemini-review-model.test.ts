@@ -1,4 +1,9 @@
 import { createGoogle } from "@ai-sdk/google";
+import { createHash } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Effect } from "effect";
 import pino from "pino";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
@@ -6,13 +11,17 @@ import { z } from "zod";
 import {
 	GeminiReviewService,
 	createGoogleContextCapacityFetch,
+	createGoogleContextCapacityClient,
 	ReviewContextCapacityExceeded,
 } from "#integrations/gemini";
 import {
 	type ReviewFindingJudgeInput,
 	type ReviewInput,
 	type ReviewInputChunk,
+	type ReviewSourceCatalog,
 	ReviewModelResponseError,
+	ReviewSourceArtifactService,
+	ReviewSourceCatalogService,
 } from "#features/review";
 import {
 	type McpJsonObject,
@@ -80,6 +89,40 @@ const FINDING = {
 } as const;
 const EMPTY_BATCH: ReviewFindingJudgeInput = { candidates: [], evidence: [] };
 const READ_ARGUMENTS = { path: "src/validator.ts", ref: INPUT.headSha };
+
+function createCatalog() {
+	return {
+		revisions: [
+			{ role: "head", repositoryFullName: INPUT.repositoryFullName, revision: INPUT.headSha },
+		] as const,
+		list: vi
+			.fn<ReviewSourceCatalog["list"]>()
+			.mockResolvedValue({ kind: "page", entries: [], totalEntries: 0, nextCursor: null }),
+		read: vi
+			.fn<ReviewSourceCatalog["read"]>()
+			.mockResolvedValue({ kind: "missing", source: { role: "head", path: "missing" } }),
+		search: vi.fn<ReviewSourceCatalog["search"]>().mockResolvedValue({
+			kind: "page",
+			matches: [],
+			scannedSources: 0,
+			totalSources: 0,
+			nextCursor: null,
+			unavailable: [],
+		}),
+		related: vi
+			.fn<ReviewSourceCatalog["related"]>()
+			.mockResolvedValue({ kind: "page", entries: [], totalEntries: 0, nextCursor: null }),
+		recordInvestigation: vi
+			.fn<ReviewSourceCatalog["recordInvestigation"]>()
+			.mockImplementation(async (_tool, _args, content) => ({
+				role: "investigation",
+				path: "mcp/packet",
+				repositoryFullName: null,
+				revision: "unconfirmed",
+				contentHash: `sha256:${createHash("sha256").update(content).digest("hex")}`,
+			})),
+	};
+}
 
 function createSource() {
 	return {
@@ -154,6 +197,357 @@ function createHarness(responses: readonly Response[], source = createSource()) 
 
 describe("GeminiReviewService through the Google AI SDK transport", () => {
 	afterEach(() => vi.useRealTimers());
+	it("lets both review and judge inspect repository sources at the bound snapshot", async () => {
+		const sources = createCatalog();
+		sources.list.mockResolvedValue({
+			kind: "page",
+			entries: [
+				{
+					role: "head",
+					path: "src/example.ts",
+					repositoryFullName: INPUT.repositoryFullName,
+					revision: INPUT.headSha,
+					contentHash: "git:1111111111111111111111111111111111111111",
+					kind: "file",
+					sizeBytes: 30,
+				},
+			],
+			totalEntries: 1,
+			nextCursor: null,
+		});
+		const args = {
+			source: {
+				role: "head",
+				path: "src/example.ts",
+				contentHash: "git:1111111111111111111111111111111111111111",
+			},
+			range: { kind: "lines", startLine: 1, lineCount: 10 },
+		};
+		const read = () =>
+			googleResponse([
+				{ functionCall: { name: "source_read", args }, thoughtSignature: "signature" },
+			]);
+		const { model, source, requests } = createHarness([
+			googleResponse([
+				{
+					functionCall: {
+						name: "source_list",
+						args: { role: "head", prefix: "src/", cursor: null, limit: 10 },
+					},
+					thoughtSignature: "signature",
+				},
+			]),
+			read(),
+			outputResponse(),
+			read(),
+			outputResponse({ judgments: [] }),
+		]);
+		const execution = {
+			signal: new AbortController().signal,
+			sources,
+			recordUsage: vi.fn(),
+			recordMetric: vi.fn(),
+		};
+		const input = { ...INPUT, githubInstallationAccountLogin: "another-account" };
+		await model.review(MODEL, input, CHUNK, execution);
+		await model.judge(MODEL, input, EMPTY_BATCH, execution);
+		expect(sources.read).toHaveBeenCalledTimes(2);
+		expect(sources.read).toHaveBeenCalledWith(args, expect.any(AbortSignal));
+		expect(source.listTools).not.toHaveBeenCalled();
+		expect(JSON.stringify(requests[0])).toContain("source_search");
+		expect(JSON.stringify(requests[1])).toContain(
+			"git:1111111111111111111111111111111111111111",
+		);
+		expect(JSON.stringify(requests[3])).toContain("source_read");
+		expect(execution.recordUsage).toHaveBeenCalledTimes(5);
+		expect(execution.recordMetric).toHaveBeenCalledWith(
+			expect.objectContaining({ phase: "tool", sourceCount: 1 }),
+		);
+	});
+	it.each(["complete", "partial", "none"] as const)(
+		"requires the whole reference packet to be read before accepting results (read=%s)",
+		async (readPacket) => {
+			const content = JSON.stringify({
+				title: INPUT.title,
+				body: INPUT.body,
+				diff: CHUNK.diff,
+				referenceBefore: CHUNK.referenceBefore,
+				referenceAfter: CHUNK.referenceAfter,
+			});
+			const reference = {
+				role: "investigation",
+				path: "mcp/packet",
+				repositoryFullName: null,
+				revision: "unconfirmed",
+				contentHash: `sha256:${createHash("sha256").update(content).digest("hex")}`,
+			} as const;
+			const sources = createCatalog();
+			const returnedContent = readPacket === "partial" ? content.slice(0, -1) : content;
+			sources.read.mockResolvedValue({
+				kind: "loaded",
+				source: reference,
+				content: returnedContent,
+				totalLines: 1,
+				startLine: 1,
+				endLine: 1,
+				startColumn: 0,
+				endColumn: returnedContent.length,
+				nextRange: null,
+			});
+			const responses =
+				readPacket !== "none"
+					? [
+							googleResponse([
+								{
+									functionCall: {
+										name: "source_read",
+										args: {
+											source: {
+												role: reference.role,
+												path: reference.path,
+												contentHash: reference.contentHash,
+											},
+											range: { kind: "lines", startLine: 1, lineCount: 1 },
+										},
+									},
+									thoughtSignature: "signature",
+								},
+							]),
+							outputResponse(),
+						]
+					: [outputResponse()];
+			let counts = 0;
+			const fetcher = vi.fn<typeof fetch>().mockImplementation(async (url) => {
+				if (url.toString().endsWith(":countTokens"))
+					return Response.json({ totalTokens: ++counts <= 2 ? 101 : 100 });
+				if (!url.toString().endsWith(":generateContent"))
+					return Response.json({ inputTokenLimit: 100 });
+				const response = responses.shift();
+				if (response === undefined) throw new Error("Unexpected generation");
+				return response;
+			});
+			const model = new GeminiReviewService(
+				createGoogle({
+					apiKey: "test",
+					fetch: createGoogleContextCapacityFetch(fetcher, "test"),
+				}),
+				createSource(),
+				pino({ level: "silent" }),
+			);
+			const execution = {
+				signal: new AbortController().signal,
+				sources,
+				recordUsage: vi.fn(),
+				recordMetric: vi.fn(),
+			};
+			const result = model.review(
+				MODEL,
+				{ ...INPUT, githubInstallationAccountLogin: "other" },
+				CHUNK,
+				execution,
+			);
+			const outcome = await result.then(
+				(value) => ({ findings: value.findings }),
+				(error: unknown) =>
+					z
+						.object({
+							_tag: z.literal("ReviewSourceCoverageIncomplete"),
+							reason: z.literal("diff_not_read"),
+						})
+						.parse(error),
+			);
+			expect(outcome).toEqual(
+				readPacket === "complete"
+					? { findings: [] }
+					: { _tag: "ReviewSourceCoverageIncomplete", reason: "diff_not_read" },
+			);
+			expect(sources.recordInvestigation).toHaveBeenCalledWith(
+				"review_input",
+				expect.any(String),
+				content,
+				expect.any(AbortSignal),
+			);
+			expect(execution.recordUsage).toHaveBeenCalledTimes(readPacket !== "none" ? 2 : 1);
+			expect(execution.recordMetric).toHaveBeenCalledWith(
+				expect.objectContaining({ phase: "count", capacityFailure: true, usage: null }),
+			);
+		},
+	);
+	it("retains full MCP responses as catalog artifacts and sends paginated receipts to the model", async () => {
+		const sources = createCatalog();
+		const { model, requests } = createHarness([toolResponse(), outputResponse()]);
+		const result = await model.review(MODEL, INPUT, CHUNK, {
+			signal: new AbortController().signal,
+			sources,
+			recordUsage: () => {},
+			recordMetric: () => {},
+		});
+		expect(sources.recordInvestigation).toHaveBeenCalledWith(
+			"read_file",
+			JSON.stringify(READ_ARGUMENTS),
+			JSON.stringify({
+				content: [{ type: "text", text: "validateDraft() permits unpaid orders" }],
+			}),
+			expect.any(AbortSignal),
+		);
+		expect(JSON.stringify(requests[1])).toContain("investigation_reference");
+		expect(JSON.stringify(requests[1])).not.toContain("validateDraft() permits unpaid orders");
+		expect(result.investigation).toMatchObject({
+			kind: "available",
+			exchanges: [{ tool: "read_file", responseJson: expect.stringContaining("sha256:") }],
+		});
+	});
+	it("reassembles a large single-line artifact through bounded source_read transport pages", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "codekeat-sdk-pages-"));
+		try {
+			const signal = new AbortController().signal;
+			const catalog = new ReviewSourceCatalogService(
+				[],
+				{
+					entries: () => Effect.succeed([]),
+					document: () =>
+						Effect.fail({ kind: "unavailable", reason: "repository_unavailable" }),
+				},
+				new ReviewSourceArtifactService(directory, "transport-pages"),
+				[],
+			);
+			const content = JSON.stringify({
+				source: `Original 💡${" full source ".repeat(1_000)}`,
+			});
+			const reference = await catalog.recordInvestigation(
+				"test_source",
+				"{}",
+				content,
+				signal,
+			);
+			const source = {
+				role: reference.role,
+				path: reference.path,
+				contentHash: reference.contentHash,
+			};
+			const delivered: string[] = [];
+			const requestSchema = z.object({
+				contents: z.array(
+					z.object({
+						parts: z.array(
+							z
+								.object({
+									functionResponse: z
+										.object({
+											response: z.object({
+												content: z.object({
+													content: z.string(),
+													nextRange: z.json().nullable(),
+												}),
+											}),
+										})
+										.optional(),
+								})
+								.passthrough(),
+						),
+					}),
+				),
+			});
+			const fetcher = vi.fn<typeof fetch>().mockImplementation(async (_url, init) => {
+				if (typeof init?.body !== "string") throw new Error("Missing SDK payload");
+				const request = requestSchema.parse(JSON.parse(init.body));
+				const previous = request.contents
+					.flatMap((entry) => entry.parts)
+					.flatMap((part) =>
+						part.functionResponse === undefined
+							? []
+							: [part.functionResponse.response.content],
+					)
+					.at(-1);
+				if (previous !== undefined) delivered.push(previous.content);
+				if (previous?.nextRange === null) return outputResponse();
+				return googleResponse([
+					{
+						functionCall: {
+							name: "source_read",
+							args: {
+								source,
+								range: previous?.nextRange ?? {
+									kind: "lines",
+									startLine: 1,
+									lineCount: 200,
+								},
+							},
+						},
+						thoughtSignature: "signature",
+					},
+				]);
+			});
+			const model = new GeminiReviewService(
+				createGoogle({ apiKey: "test", fetch: fetcher }),
+				createSource(),
+				pino({ level: "silent" }),
+			);
+			await model.review(
+				MODEL,
+				{ ...INPUT, githubInstallationAccountLogin: "other" },
+				CHUNK,
+				{ signal, sources: catalog, recordUsage: () => {}, recordMetric: () => {} },
+			);
+			expect(delivered.length).toBeGreaterThan(1);
+			expect(delivered.every((page) => page.length <= 4_096)).toBe(true);
+			expect(delivered.join("")).toBe(content);
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
+	it("rejects a judge verdict that never reads the required evidence artifact while retaining charged usage", async () => {
+		const sources = createCatalog();
+		const batch: ReviewFindingJudgeInput = {
+			candidates: [{ index: 0, evidenceId: "evidence", finding: FINDING }],
+			evidence: [
+				{
+					id: "evidence",
+					diff: CHUNK.diff,
+					referenceBefore: CHUNK.referenceBefore,
+					referenceAfter: CHUNK.referenceAfter,
+					investigation: { kind: "not_enabled" },
+				},
+			],
+		};
+		let counts = 0;
+		const fetcher = vi.fn<typeof fetch>().mockImplementation(async (url) => {
+			if (url.toString().endsWith(":countTokens"))
+				return Response.json({ totalTokens: ++counts <= 2 ? 101 : 100 });
+			if (!url.toString().endsWith(":generateContent"))
+				return Response.json({ inputTokenLimit: 100 });
+			return outputResponse({
+				judgments: [{ index: 0, kind: "approved", rationale: "Claimed without reading" }],
+			});
+		});
+		const model = new GeminiReviewService(
+			createGoogle({
+				apiKey: "test",
+				fetch: createGoogleContextCapacityFetch(fetcher, "test"),
+			}),
+			createSource(),
+			pino({ level: "silent" }),
+		);
+		const execution = {
+			signal: new AbortController().signal,
+			sources,
+			recordUsage: vi.fn(),
+			recordMetric: vi.fn(),
+		};
+		await expect(model.judge(MODEL, INPUT, batch, execution)).rejects.toMatchObject({
+			_tag: "ReviewSourceCoverageIncomplete",
+			reason: "judge_evidence_not_read",
+		});
+		expect(sources.recordInvestigation).toHaveBeenCalledWith(
+			"judge_input",
+			expect.any(String),
+			JSON.stringify({ title: INPUT.title, body: INPUT.body, ...batch }),
+			expect.any(AbortSignal),
+		);
+		expect(execution.recordUsage).toHaveBeenCalledWith(
+			expect.objectContaining({ stage: "judge", usage: EXPECTED_USAGE }),
+		);
+	});
 	it("shares PR intent, revisions, repository context and actual MCP evidence with the judge", async () => {
 		const { model, requests, source } = createHarness([
 			toolResponse(),
@@ -450,12 +844,61 @@ describe("GeminiReviewService through the Google AI SDK transport", () => {
 
 describe("model cancellation and usage persistence", () => {
 	afterEach(() => vi.useRealTimers());
+	it("keeps a review pending through a provider cooldown longer than five minutes", async () => {
+		vi.useFakeTimers();
+		let generations = 0;
+		const fetcher = vi.fn<typeof fetch>().mockImplementation(async (url) => {
+			if (url.toString().endsWith(":countTokens")) return Response.json({ totalTokens: 1 });
+			if (!url.toString().endsWith(":generateContent"))
+				return Response.json({ inputTokenLimit: 100_000 });
+			generations++;
+			return generations === 1
+				? new Response(null, { status: 429, headers: { "Retry-After": "600" } })
+				: outputResponse();
+		});
+		const client = createGoogleContextCapacityClient(fetcher, "test");
+		await client.fetch(
+			`https://generativelanguage.googleapis.com/v1beta/models/${MODEL.apiName}:generateContent`,
+			{
+				method: "POST",
+				body: JSON.stringify({ contents: [] }),
+			},
+		);
+		const service = new GeminiReviewService(
+			createGoogle({ apiKey: "test", fetch: client.fetch }),
+			createSource(),
+			pino({ level: "silent" }),
+		);
+		let settled = false;
+		const pending = service
+			.review(MODEL, { ...INPUT, githubInstallationAccountLogin: "other" }, CHUNK)
+			.then(
+				(result) => {
+					settled = true;
+					return result;
+				},
+				(error: unknown) => {
+					settled = true;
+					return error;
+				},
+			);
+		await vi.advanceTimersByTimeAsync(300_001);
+		expect(settled).toBe(false);
+		expect(generations).toBe(1);
+		await vi.advanceTimersByTimeAsync(300_000);
+		expect(await pending).toMatchObject({ findings: [], usage: EXPECTED_USAGE });
+		expect(generations).toBe(2);
+	});
 	it.each(["review", "judge"] as const)(
 		"aborts a stalled %s response body after five minutes",
 		async (kind) => {
 			vi.useFakeTimers();
 			let observedSignal: AbortSignal | null | undefined;
-			const fetchMock = vi.fn<typeof fetch>().mockImplementation(async (_url, init) => {
+			const fetchMock = vi.fn<typeof fetch>().mockImplementation(async (url, init) => {
+				if (url.toString().endsWith(":countTokens"))
+					return Response.json({ totalTokens: 1 });
+				if (!url.toString().endsWith(":generateContent"))
+					return Response.json({ inputTokenLimit: 100_000 });
 				observedSignal = init?.signal;
 				return new Response(
 					new ReadableStream<Uint8Array>({
@@ -471,7 +914,10 @@ describe("model cancellation and usage persistence", () => {
 				);
 			});
 			const service = new GeminiReviewService(
-				createGoogle({ apiKey: "test", fetch: fetchMock }),
+				createGoogle({
+					apiKey: "test",
+					fetch: createGoogleContextCapacityFetch(fetchMock, "test"),
+				}),
 				createSource(),
 				pino({ level: "silent" }),
 			);
@@ -483,7 +929,9 @@ describe("model cancellation and usage persistence", () => {
 			await vi.advanceTimersByTimeAsync(300_001);
 			expect(await result).toBeInstanceOf(Error);
 			expect(observedSignal?.aborted).toBe(true);
-			expect(fetchMock).toHaveBeenCalledOnce();
+			expect(
+				fetchMock.mock.calls.filter(([url]) => url.toString().endsWith(":generateContent")),
+			).toHaveLength(1);
 		},
 	);
 	it("records charged tool steps before a tool fails and aggregates usage across fallback", async () => {
@@ -497,6 +945,8 @@ describe("model cancellation and usage persistence", () => {
 		const result = await model.review(MODEL, INPUT, CHUNK, {
 			signal: new AbortController().signal,
 			recordUsage: (event) => events.push(event),
+			sources: null,
+			recordMetric: () => {},
 		});
 		expect(events).toHaveLength(2);
 		expect(new Set(events.map((event) => event.callId)).size).toBe(2);
@@ -517,6 +967,8 @@ describe("model cancellation and usage persistence", () => {
 			model.judge(MODEL, INPUT, EMPTY_BATCH, {
 				signal: new AbortController().signal,
 				recordUsage,
+				sources: null,
+				recordMetric: () => {},
 			}),
 		).rejects.toMatchObject({ issue: "schema_invalid" });
 		expect(recordUsage).toHaveBeenCalledWith(
@@ -542,7 +994,12 @@ describe("model cancellation and usage persistence", () => {
 			pino({ level: "silent" }),
 		);
 		const result = service
-			.judge(MODEL, INPUT, EMPTY_BATCH, { signal: controller.signal, recordUsage: () => {} })
+			.judge(MODEL, INPUT, EMPTY_BATCH, {
+				signal: controller.signal,
+				recordUsage: () => {},
+				sources: null,
+				recordMetric: () => {},
+			})
 			.catch((error: unknown) => error);
 		await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
 		controller.abort();

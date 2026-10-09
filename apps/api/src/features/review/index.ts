@@ -5,6 +5,7 @@ export {
 } from "./controllers/review-read.controller.js";
 export {
 	ReviewContextCapacityExceeded,
+	ReviewSourceCoverageIncomplete,
 	ReviewModelResponseError,
 	type ReviewModelResponseIssue,
 } from "./errors/review-model.error.js";
@@ -76,11 +77,11 @@ export type {
 export { formatReviewReport } from "./utils/review-report.util.js";
 export * from "./types/review-source.types.js";
 export * from "./types/review-metrics.types.js";
+export { ReviewTelemetryRepository } from "./repositories/review-telemetry.repository.js";
+export { ReviewWorkRepository } from "./repositories/review-work.repository.js";
+export { createReviewTelemetryController } from "./controllers/review-telemetry.controller.js";
 export { ReviewSourceArtifactService } from "./services/review-source-artifact.service.js";
 export {
 	ReviewSourceCatalogService,
 	type ReviewSourceBackend,
 } from "./services/review-source-catalog.service.js";
-export { ReviewWorkRepository } from "./repositories/review-work.repository.js";
-export { ReviewTelemetryRepository } from "./repositories/review-telemetry.repository.js";
-export { createReviewTelemetryController } from "./controllers/review-telemetry.controller.js";

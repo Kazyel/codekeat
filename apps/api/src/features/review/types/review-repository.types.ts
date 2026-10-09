@@ -9,6 +9,9 @@ import type {
 } from "./review-run.types.js";
 
 export type ReviewRunErrorCode =
+	| "gemini_capacity_unavailable"
+	| "review_checkpoint_unavailable"
+	| "review_source_coverage_incomplete"
 	| "review_run_timeout"
 	| "review_context_capacity_exceeded"
 	| "finding_location_invalid"

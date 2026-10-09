@@ -93,7 +93,6 @@ export class ReviewRunRepository {
 				reviewStrategyVersion: null,
 				changedLineCount: null,
 				reviewChunkCount: null,
-				processingDurationMs: null,
 				completedAt: null,
 				updatedAt: currentTimestamp(),
 			})
@@ -137,6 +136,39 @@ export class ReviewRunRepository {
 			judgeCallCount: row.judgeCallCount ?? 0,
 			processingDurationMs: row.processingDurationMs ?? 0,
 		};
+	}
+
+	queuedAt(reviewRunId: string): string | null {
+		return (
+			this.connection.db
+				.select({ value: reviewRuns.updatedAt })
+				.from(reviewRuns)
+				.where(and(eq(reviewRuns.id, reviewRunId), eq(reviewRuns.status, "queued")))
+				.get()?.value ?? null
+		);
+	}
+
+	/** A single API replica owns these claims; startup recovers interrupted jobs. */
+	recoverReviewRuns(): readonly string[] {
+		this.connection.db
+			.update(reviewRuns)
+			.set({ status: "queued", updatedAt: currentTimestamp() })
+			.where(eq(reviewRuns.status, "running"))
+			.run();
+		return this.connection.db
+			.select({ id: reviewRuns.id })
+			.from(reviewRuns)
+			.where(eq(reviewRuns.status, "queued"))
+			.all()
+			.map((row) => row.id);
+	}
+
+	yieldReviewRun(reviewRunId: string, processingDurationMs: number): void {
+		this.connection.db
+			.update(reviewRuns)
+			.set({ status: "queued", processingDurationMs, updatedAt: currentTimestamp() })
+			.where(and(eq(reviewRuns.id, reviewRunId), eq(reviewRuns.status, "running")))
+			.run();
 	}
 
 	claimQueuedReviewRun(reviewRunId: string): RunnableReviewRun | null {

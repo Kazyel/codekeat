@@ -1,3 +1,4 @@
+import { dirname, join } from "node:path";
 import { createGoogle } from "@ai-sdk/google";
 import {
 	createDatabaseConnection,
@@ -23,7 +24,7 @@ import {
 	WebhookDeliveryRepository,
 } from "#features/github";
 import { createModelCatalogController, ModelCatalogRepository } from "../features/models/index.js";
-import { createGoogleContextCapacityFetch, GeminiReviewService } from "#integrations/gemini";
+import { createGoogleContextCapacityClient, GeminiReviewService } from "#integrations/gemini";
 import {
 	createReviewQualityController,
 	createReviewReadController,
@@ -35,6 +36,9 @@ import {
 	ReviewRunProcessorService,
 	type ReviewRunProcessorTask,
 	ReviewRunRepository,
+	ReviewWorkRepository,
+	ReviewTelemetryRepository,
+	createReviewTelemetryController,
 } from "#features/review";
 import { TakeatMcpAccessTokenService, TakeatMcpTool } from "#integrations/takeat-mcp";
 import type { ApplicationEnvironment } from "./environment.js";
@@ -58,6 +62,8 @@ export async function configureApplication(
 		const reviewReportRepository = new ReviewReportRepository(db);
 		const reviewRunRepository = new ReviewRunRepository(db, reviewReportRepository);
 		const reviewQueryRepository = new ReviewQueryRepository(db);
+		const reviewWorkRepository = new ReviewWorkRepository(db);
+		const reviewTelemetryRepository = new ReviewTelemetryRepository(db);
 
 		/*
 			Autenticação e provisionamento do administrador inicial.
@@ -81,10 +87,15 @@ export async function configureApplication(
 			app.log,
 		);
 
+		const capacity = createGoogleContextCapacityClient(fetch, environment.googleApiKey, {
+			concurrency: environment.reviewModelConcurrency,
+			requestsPerMinute: environment.googleRequestsPerMinute,
+			inputTokensPerMinute: environment.googleInputTokensPerMinute,
+		});
 		const model = new GeminiReviewService(
 			createGoogle({
 				apiKey: environment.googleApiKey,
-				fetch: createGoogleContextCapacityFetch(fetch, environment.googleApiKey),
+				fetch: capacity.fetch,
 			}),
 			new TakeatMcpTool(environment.takeatMcpUrl, takeatMcpAccessTokenService, app.log),
 			app.log,
@@ -117,11 +128,21 @@ export async function configureApplication(
 		);
 		processor = new ReviewRunProcessorService(
 			reviewRunRepository,
-			new GitHubReviewInputService(app, githubAccessRepository),
+			new GitHubReviewInputService(app, githubAccessRepository, {
+				artifactDirectory: join(dirname(environment.databasePath), "review-artifacts"),
+				getInputTokenLimit: async (model: string, signal: AbortSignal) =>
+					(await capacity.getModelCapacity(model, signal)).inputTokenLimit,
+			}),
 			model,
 			model,
 			queue,
 			app.log,
+			reviewWorkRepository,
+			reviewTelemetryRepository,
+			{
+				unitConcurrency: environment.reviewUnitConcurrency,
+				getModelCapacity: capacity.getModelCapacity,
+			},
 		);
 
 		const installationSync = new GitHubInstallationSyncService(
@@ -130,6 +151,10 @@ export async function configureApplication(
 			environment.allowedGithubAccounts,
 		);
 		await installationSync.initialize();
+		for (const runId of reviewRunRepository.recoverReviewRuns())
+			await queue.enqueueReview(runId);
+		for (const reportId of reviewReportRepository.recoverReviewReports())
+			await queue.enqueueReport(reportId);
 
 		/*
 			Registro de webhooks para solicitações de revisão.
@@ -158,6 +183,12 @@ export async function configureApplication(
 			createGitHubConnectionReadController(
 				githubAccessRepository,
 				environment.allowedGithubAccounts,
+				environment.dashboardApiToken,
+			),
+		);
+		options.addHandler(
+			createReviewTelemetryController(
+				reviewTelemetryRepository,
 				environment.dashboardApiToken,
 			),
 		);

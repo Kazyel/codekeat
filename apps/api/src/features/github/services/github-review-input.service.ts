@@ -1,3 +1,4 @@
+import { Effect } from "effect";
 import parseDiff, { type File } from "parse-diff";
 import { z } from "zod";
 
@@ -9,24 +10,31 @@ import {
 	type ReviewInputSource,
 	type RunnableReviewRun,
 	type ReviewRunIgnoreReason,
+	type ReviewMetricRecorder,
 } from "#features/review";
+import {
+	githubContextRequests,
+	observeGitHubContextRequest,
+} from "../utils/github-context-request.util.js";
 import { MAXIMUM_PULL_REQUEST_FILES } from "../constants/github.constants.js";
 import type { GitHubAccessRepository } from "../repositories/github-access.repository.js";
+import { loadCatalogReviewContext } from "./github-catalog-review-context.service.js";
 import {
-	type GitHubReviewContentSource,
-	loadGitHubReviewContext,
-} from "./github-review-context.service.js";
+	createGitHubSourceCatalog,
+	type GitHubSourceComparisonApi,
+	type GitHubSourceGitApi,
+} from "./github-source-catalog.service.js";
 
 const PULL_REQUEST_SCHEMA = z.object({
 	base: z.object({
 		repo: z.object({ id: z.number().int().positive() }),
-		sha: z.string().min(1),
+		sha: z.string().regex(/^[a-f0-9]{40}$/),
 	}),
 	body: z.string().nullable(),
 	changed_files: z.number().int().nonnegative(),
 	draft: z.boolean(),
 	head: z.object({
-		sha: z.string().min(1),
+		sha: z.string().regex(/^[a-f0-9]{40}$/),
 		repo: z.object({ full_name: z.string().regex(/^[^/]+\/[^/]+$/) }).nullable(),
 	}),
 	state: z.enum(["open", "closed"]),
@@ -45,7 +53,8 @@ type PullRequestLocation = {
 interface GitHubReviewInputApp {
 	auth(githubInstallationId: number): Promise<{
 		readonly rest: {
-			readonly repos: GitHubReviewContentSource;
+			readonly repos: GitHubSourceComparisonApi;
+			readonly git: GitHubSourceGitApi;
 			readonly pulls: {
 				get(location: PullRequestLocation): Promise<{ readonly data: unknown }>;
 			};
@@ -56,14 +65,34 @@ interface GitHubReviewInputApp {
 		): Promise<{ readonly data: unknown }>;
 	}>;
 }
+interface GitHubReviewInputOptions {
+	readonly artifactDirectory: string;
+	readonly getInputTokenLimit: (modelApiName: string, signal: AbortSignal) => Promise<number>;
+}
 
 export class GitHubReviewInputService implements ReviewInputSource {
 	constructor(
 		private readonly app: GitHubReviewInputApp,
 		private readonly accessRepository: GitHubAccessRepository,
+		private readonly options: GitHubReviewInputOptions,
 	) {}
 
-	async load(run: RunnableReviewRun, signal?: AbortSignal): Promise<ReviewInputLoadResult> {
+	async load(
+		run: RunnableReviewRun,
+		signal?: AbortSignal,
+		recordMetric?: ReviewMetricRecorder,
+	): Promise<ReviewInputLoadResult> {
+		return this.loadAuthorizedInput(
+			run,
+			signal ?? new AbortController().signal,
+			recordMetric ?? (() => undefined),
+		);
+	}
+	private async loadAuthorizedInput(
+		run: RunnableReviewRun,
+		signal: AbortSignal,
+		recordMetric: ReviewMetricRecorder,
+	): Promise<ReviewInputLoadResult> {
 		try {
 			const octokit = await this.app.auth(run.githubInstallationId);
 
@@ -73,27 +102,34 @@ export class GitHubReviewInputService implements ReviewInputSource {
 				pull_number: run.pullRequestNumber,
 				request: { signal },
 			};
-			const response = await octokit.rest.pulls.get(location);
+			const response = await inputRequest(
+				(requestSignal) =>
+					octokit.rest.pulls.get({ ...location, request: { signal: requestSignal } }),
+				signal,
+				recordMetric,
+			);
 			const pullRequest = PULL_REQUEST_SCHEMA.parse(response.data);
-			const ignoreReason = this.getInputIgnoreReason(pullRequest, run);
-			if (ignoreReason !== null) {
-				return { kind: "ignored", ignoreReason };
-			}
+			const disposition = this.inputDisposition(pullRequest, run);
+			if (disposition !== null) return disposition;
 
-			if (pullRequest.changed_files > MAXIMUM_PULL_REQUEST_FILES) {
-				return { kind: "failed", errorCode: "github_diff_file_limit_exceeded" };
-			}
-
-			const diffResponse = await octokit.request(
-				"GET /repos/{owner}/{repo}/pulls/{pull_number}",
-				{
-					...location,
-					headers: { accept: "application/vnd.github.diff" },
-				},
+			const diffResponse = await inputRequest(
+				(requestSignal) =>
+					octokit.request("GET /repos/{owner}/{repo}/pulls/{pull_number}", {
+						...location,
+						request: { signal: requestSignal },
+						headers: { accept: "application/vnd.github.diff" },
+					}),
+				signal,
+				recordMetric,
 			);
 
 			const diff = z.string().parse(diffResponse.data);
-			const currentResponse = await octokit.rest.pulls.get(location);
+			const currentResponse = await inputRequest(
+				(requestSignal) =>
+					octokit.rest.pulls.get({ ...location, request: { signal: requestSignal } }),
+				signal,
+				recordMetric,
+			);
 			const currentPullRequest = PULL_REQUEST_SCHEMA.parse(currentResponse.data);
 			const currentIgnoreReason = this.getSnapshotIgnoreReason(
 				pullRequest,
@@ -104,16 +140,40 @@ export class GitHubReviewInputService implements ReviewInputSource {
 				return { kind: "ignored", ignoreReason: currentIgnoreReason };
 			}
 			const chunks = createCompleteReviewChunks(diff, pullRequest.changed_files);
-			const repositoryContext = await loadGitHubReviewContext(
+			const inputTokenLimit = await availableInputTokenLimit(
+				this.options.getInputTokenLimit,
+				run.model.apiName,
+				signal,
+			);
+			if (inputTokenLimit === null)
+				return { kind: "failed", errorCode: "gemini_capacity_unavailable" };
+			const sources = await createGitHubSourceCatalog(
+				octokit.rest.git,
 				octokit.rest.repos,
-				headRepositoryFullName(pullRequest.head.repo),
-				run.headSha,
+				{
+					reviewRunId: run.id,
+					baseRepositoryFullName: run.repositoryFullName,
+					headRepositoryFullName: headRepositoryFullName(pullRequest.head.repo),
+					baseSha: pullRequest.base.sha,
+					headSha: run.headSha,
+					body: pullRequest.body,
+					diff,
+				},
+				this.options.artifactDirectory,
+				signal,
+				recordMetric,
+			);
+			const repositoryContext = await loadCatalogReviewContext(
+				sources,
 				chunks,
+				pullRequest.body,
+				inputTokenLimit,
 				signal,
 			);
 
 			return {
 				kind: "ready",
+				sources,
 				input: {
 					baseSha: pullRequest.base.sha,
 					body: pullRequest.body,
@@ -130,6 +190,16 @@ export class GitHubReviewInputService implements ReviewInputSource {
 		} catch {
 			return { kind: "failed", errorCode: "github_diff_unavailable" };
 		}
+	}
+	private inputDisposition(
+		pullRequest: GitHubPullRequest,
+		run: RunnableReviewRun,
+	): ReviewInputLoadResult | null {
+		const ignoreReason = this.getInputIgnoreReason(pullRequest, run);
+		if (ignoreReason !== null) return { kind: "ignored", ignoreReason };
+		if (pullRequest.changed_files > MAXIMUM_PULL_REQUEST_FILES)
+			return { kind: "failed", errorCode: "github_diff_file_limit_exceeded" };
+		return null;
 	}
 
 	private getSnapshotIgnoreReason(
@@ -237,4 +307,38 @@ function fileChangedLines(file: File, path: string): ReadonlyMap<string, Readonl
 		}
 	}
 	return new Map([[path, lines]]);
+}
+
+function inputRequest<A>(
+	request: (signal: AbortSignal) => Promise<A>,
+	signal: AbortSignal,
+	recordMetric: ReviewMetricRecorder,
+): Promise<A> {
+	return Effect.runPromise(
+		githubContextRequests.withPermit(
+			observeGitHubContextRequest(
+				Effect.tryPromise({
+					try: request,
+					catch: () => new Error("GitHub input request failed."),
+				}),
+				recordMetric,
+			),
+		),
+		{ signal },
+	);
+}
+async function availableInputTokenLimit(
+	request: GitHubReviewInputOptions["getInputTokenLimit"],
+	model: string,
+	signal: AbortSignal,
+): Promise<number | null> {
+	try {
+		return z
+			.number()
+			.int()
+			.positive()
+			.parse(await request(model, signal));
+	} catch {
+		return null;
+	}
 }

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { findings, reviewReports, reviewRuns } from "@codekeat/database";
 import pino, { type Logger } from "pino";
 import { describe, expect, it, vi } from "vitest";
@@ -18,6 +19,8 @@ import {
 	ReviewContextCapacityExceeded,
 	type ReviewModelResult,
 	ReviewRunProcessorService,
+	ReviewWorkRepository,
+	ReviewTelemetryRepository,
 	type ReviewWorkQueue,
 	type RunnableReviewRun,
 } from "#features/review";
@@ -46,7 +49,7 @@ class ReadyInputSource implements ReviewInputSource {
 
 	async load(run: RunnableReviewRun): Promise<ReviewInputLoadResult> {
 		this.githubInstallationAccountLogins.push(run.githubInstallationAccountLogin);
-		return { kind: "ready", input: this.input };
+		return { kind: "ready", input: this.input, sources: null };
 	}
 }
 
@@ -60,6 +63,7 @@ class StoppedInputSource implements ReviewInputSource {
 }
 
 class RecordedModel implements ReviewModel {
+	readonly id = randomUUID();
 	readonly modelNames: string[] = [];
 	readonly chunkIndexes: number[] = [];
 
@@ -75,7 +79,7 @@ class RecordedModel implements ReviewModel {
 		this.chunkIndexes.push(chunk.index);
 		execution?.recordUsage({
 			stage: "review",
-			callId: `review-${chunk.index}`,
+			callId: `${this.id}-review-${chunk.index}`,
 			stepNumber: 0,
 			usage: REVIEW_USAGE,
 		});
@@ -108,6 +112,7 @@ class FailingModel implements ReviewModel {
 }
 
 class RecordedJudge implements ReviewFindingJudge {
+	readonly id = randomUUID();
 	readonly batches: ReviewFindingJudgeInput[] = [];
 
 	constructor(
@@ -126,7 +131,7 @@ class RecordedJudge implements ReviewFindingJudge {
 		const result = await this.decide(batch);
 		execution?.recordUsage({
 			stage: "judge",
-			callId: `judge-${this.batches.length}`,
+			callId: `${this.id}-judge-${this.batches.length}`,
 			stepNumber: 0,
 			usage: result.usage,
 		});
@@ -134,8 +139,12 @@ class RecordedJudge implements ReviewFindingJudge {
 	}
 }
 
-class RecordedQueue implements Pick<ReviewWorkQueue, "enqueueReport"> {
+class RecordedQueue implements ReviewWorkQueue {
 	readonly reviewReportIds: string[] = [];
+	readonly reviewRunIds: string[] = [];
+	async enqueueReview(id: string): Promise<void> {
+		this.reviewRunIds.push(id);
+	}
 
 	async enqueueReport(reviewReportId: string): Promise<void> {
 		this.reviewReportIds.push(reviewReportId);
@@ -143,6 +152,176 @@ class RecordedQueue implements Pick<ReviewWorkQueue, "enqueueReport"> {
 }
 
 describe("ReviewRunProcessorService", () => {
+	it("yields an expired run slice and resumes only its unfinished units", async () => {
+		vi.useFakeTimers();
+		const database = createReviewRun();
+		try {
+			const first = new RecordedModel([[], []]);
+			let interruptedSignal: AbortSignal | null = null;
+			const model: ReviewModel = {
+				async review(model, input, chunk, execution) {
+					if (chunk.index === 1) return first.review(model, input, chunk, execution);
+					interruptedSignal = execution.signal;
+					return new Promise<ReviewModelResult>((_resolve, reject) => {
+						execution.signal.addEventListener(
+							"abort",
+							() => reject(new Error("cancelled")),
+							{ once: true },
+						);
+					});
+				},
+			};
+			const queue = new RecordedQueue();
+			const work = new ReviewWorkRepository(database.connection);
+			const processor = new ReviewRunProcessorService(
+				database.reviewRunRepository,
+				new ReadyInputSource(TWO_CHUNK_INPUT),
+				model,
+				new RecordedJudge(),
+				queue,
+				LOGGER,
+				work,
+				new ReviewTelemetryRepository(database.connection),
+				{
+					unitConcurrency: 1,
+					getModelCapacity: async () => ({ inputTokenLimit: 100_000 }),
+				},
+			);
+			const pending = processor.process(REVIEW_RUN_ID);
+			await vi.advanceTimersByTimeAsync(30 * 60 * 1_000 + 1);
+			await pending;
+			expect(interruptedSignal).toMatchObject({ aborted: true });
+			expect(readRun(database)).toMatchObject({
+				status: "queued",
+				inputTokens: 100,
+				errorCode: null,
+			});
+			expect(work.listLeaves(REVIEW_RUN_ID, "review").map((unit) => unit.status)).toEqual([
+				"completed",
+				"pending",
+			]);
+			expect(queue.reviewRunIds).toEqual([REVIEW_RUN_ID]);
+			expect(queue.reviewReportIds).toEqual([]);
+			const resumed = new RecordedModel([[], []]);
+			await createProcessor(
+				database,
+				new ReadyInputSource(TWO_CHUNK_INPUT),
+				resumed,
+				new RecordedJudge(),
+			).process(REVIEW_RUN_ID);
+			expect(resumed.chunkIndexes).toEqual([2]);
+			expect(readRun(database)).toMatchObject({ status: "completed", inputTokens: 200 });
+		} finally {
+			database.close();
+			vi.useRealTimers();
+		}
+	});
+	it("bounds parallel units and waits for every unit before publishing", async () => {
+		const database = createReviewRun();
+		let active = 0,
+			peak = 0;
+		const model: ReviewModel = {
+			async review() {
+				active++;
+				peak = Math.max(peak, active);
+				await new Promise<void>((resolve) => setTimeout(resolve, 1));
+				active--;
+				return {
+					findings: [],
+					investigation: { kind: "not_enabled" },
+					usage: REVIEW_USAGE,
+				};
+			},
+		};
+		const original = ONE_CHUNK_INPUT.chunks[0]!;
+		const input = {
+			...ONE_CHUNK_INPUT,
+			chunks: Array.from({ length: 5 }, (_, i) => ({ ...original, index: i + 1, total: 5 })),
+		};
+		await createProcessor(
+			database,
+			new ReadyInputSource(input),
+			model,
+			new RecordedJudge(),
+			LOGGER,
+			2,
+		).process(REVIEW_RUN_ID);
+		expect(peak).toBe(2);
+		expect(active).toBe(0);
+		expect(readRun(database)).toMatchObject({ status: "completed", reviewChunkCount: 5 });
+		expect(database.connection.db.select().from(reviewReports).all()).toHaveLength(1);
+		database.close();
+	});
+
+	it("resumes completed review units after a failed request without paying for them again", async () => {
+		const database = createReviewRun();
+		const calls: number[] = [];
+		const initial: ReviewModel = {
+			async review(_model, _input, chunk, execution) {
+				calls.push(chunk.index);
+				if (chunk.index === 2) throw new Error("unavailable");
+				execution.recordUsage({
+					stage: "review",
+					callId: "first-unit-paid",
+					stepNumber: 0,
+					usage: REVIEW_USAGE,
+				});
+				return {
+					findings: [VALID_FINDING],
+					investigation: { kind: "not_enabled" },
+					usage: REVIEW_USAGE,
+				};
+			},
+		};
+		await createProcessor(
+			database,
+			new ReadyInputSource(TWO_CHUNK_INPUT),
+			initial,
+			new RecordedJudge(),
+		).process(REVIEW_RUN_ID);
+		expect(readRun(database)).toMatchObject({ status: "failed", inputTokens: 100 });
+		expect(database.reviewRunRepository.requeueReviewRun(REVIEW_RUN_ID, "command")).toBe(true);
+		const resumed = new RecordedModel([[], []]);
+		await createProcessor(
+			database,
+			new ReadyInputSource(TWO_CHUNK_INPUT),
+			resumed,
+			new RecordedJudge(),
+		).process(REVIEW_RUN_ID);
+		expect(calls).toEqual([1, 2]);
+		expect(resumed.chunkIndexes).toEqual([2]);
+		expect(readRun(database)).toMatchObject({
+			status: "completed",
+			inputTokens: 200,
+			judgeCallCount: 1,
+		});
+		expect(database.connection.db.select().from(findings).all()).toHaveLength(1);
+		database.close();
+	});
+	it("creates the complete plan atomically and recovers interrupted claims at startup", () => {
+		const database = createReviewRun();
+		const work = new ReviewWorkRepository(database.connection);
+		work.ensurePlan(REVIEW_RUN_ID, "fingerprint");
+		database.connection.client.exec(
+			"CREATE TRIGGER reject_second_unit BEFORE INSERT ON review_work_units WHEN NEW.ordinal = 1 BEGIN SELECT RAISE(ABORT, 'simulate storage failure'); END;",
+		);
+		expect(() => work.ensureUnits(REVIEW_RUN_ID, "review", ["one", "two"])).toThrow(
+			"simulate storage failure",
+		);
+		expect(work.listLeaves(REVIEW_RUN_ID, "review")).toEqual([]);
+		database.connection.client.exec("DROP TRIGGER reject_second_unit");
+		work.ensureUnits(REVIEW_RUN_ID, "review", ["one", "two"]);
+		work.claim(work.listLeaves(REVIEW_RUN_ID, "review")[0]!);
+		expect(database.reviewRunRepository.claimQueuedReviewRun(REVIEW_RUN_ID)).not.toBeNull();
+		expect(database.reviewRunRepository.recoverReviewRuns()).toEqual([REVIEW_RUN_ID]);
+		work.resetInterrupted(REVIEW_RUN_ID);
+		expect(work.listLeaves(REVIEW_RUN_ID, "review").map((unit) => unit.status)).toEqual([
+			"pending",
+			"pending",
+		]);
+		database.close();
+	});
+
 	it("deduplicates before approval and persists split usage metrics", async () => {
 		const database = createReviewRun();
 		const model = new RecordedModel([[VALID_FINDING], [VALID_FINDING]]);
@@ -185,7 +364,7 @@ describe("ReviewRunProcessorService", () => {
 			judgeCallCount: 1,
 			reviewChunkCount: 2,
 			changedLineCount: 1,
-			reviewStrategyVersion: "repository-context-v5",
+			reviewStrategyVersion: "repository-context-v6",
 		});
 		database.close();
 	});
@@ -249,7 +428,7 @@ describe("ReviewRunProcessorService", () => {
 		expect(readRun(database)).toMatchObject({
 			status: "completed",
 			judgeCallCount: 1,
-			reviewStrategyVersion: "repository-context-v5",
+			reviewStrategyVersion: "repository-context-v6",
 		});
 		database.close();
 	});
@@ -412,8 +591,7 @@ describe("ReviewRunProcessorService", () => {
 			await processing;
 			expect(requestSignal?.aborted).toBe(true);
 			expect(readRun(database)).toMatchObject({
-				status: "failed",
-				errorCode: "review_run_timeout",
+				status: "queued",
 				inputTokens: 100,
 				costUsdMicros: 11,
 				judgeInputTokens: null,
@@ -513,8 +691,8 @@ describe("ReviewRunProcessorService", () => {
 		).process(REVIEW_RUN_ID);
 		expect(readRun(database)).toMatchObject({
 			status: "completed",
-			inputTokens: 200,
-			costUsdMicros: 21,
+			inputTokens: 100,
+			costUsdMicros: 11,
 			judgeInputTokens: 50,
 			judgeCostUsdMicros: 5,
 			judgeCallCount: 2,
@@ -722,6 +900,7 @@ function createProcessor(
 	model: ReviewModel,
 	judge: ReviewFindingJudge,
 	logger: Logger = LOGGER,
+	unitConcurrency = 1,
 ): ReviewRunProcessorService {
 	return new ReviewRunProcessorService(
 		database.reviewRunRepository,
@@ -730,6 +909,9 @@ function createProcessor(
 		judge,
 		new RecordedQueue(),
 		logger,
+		new ReviewWorkRepository(database.connection),
+		new ReviewTelemetryRepository(database.connection),
+		{ unitConcurrency, getModelCapacity: async () => ({ inputTokenLimit: 100000 }) },
 	);
 }
 

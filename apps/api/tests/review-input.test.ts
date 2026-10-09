@@ -1,8 +1,19 @@
-import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { z } from "zod";
+
+const artifactDirectories: string[] = [];
+afterEach(() => {
+	for (const directory of artifactDirectories.splice(0))
+		rmSync(directory, { recursive: true, force: true });
+});
 
 import { createReviewInputChunks, GitHubReviewInputService } from "#features/github";
 import type { RunnableReviewRun } from "#features/review";
-import type { GitHubReviewContentLocation } from "../src/features/github/services/github-review-context.service.js";
+import type { GitHubSourceGitApi } from "../src/features/github/services/github-source-catalog.service.js";
 import { createReviewFindingJudgeBatches } from "../src/features/review/utils/review-finding-evidence.util.js";
 import { createTestDatabase, type TestDatabase } from "./test-database.js";
 
@@ -175,7 +186,7 @@ describe("GitHubReviewInputService", () => {
 			kind: "failed",
 			errorCode: "github_diff_unavailable",
 		});
-		expect(app.contentRequests).toEqual([]);
+		expect(app.blobRequests).toEqual([]);
 		database.close();
 	});
 	it("reads Git quoted UTF8 paths at the head SHA and anchors the same path for the judge", async () => {
@@ -192,10 +203,9 @@ describe("GitHubReviewInputService", () => {
 			path: "src/café.ts",
 			content: "old\nnew\n",
 		});
-		expect(app.contentRequests).toContainEqual(
+		expect(app.blobRequests).toContainEqual(
 			expect.objectContaining({
-				path: "src/café.ts",
-				ref: run.headSha,
+				file_sha: gitBlobSha(Buffer.from("old\nnew\n")),
 			}),
 		);
 		expect(
@@ -226,6 +236,7 @@ describe("GitHubReviewInputService", () => {
 		}
 		expect(result.input.chunks[0]?.changedLines.get("src/example.ts")).toEqual(new Set([2, 3]));
 		expect(result.input.repositoryContext.files).toEqual([
+			...ROOT_MISSING_DOCUMENTS,
 			{ kind: "missing", path: ".codekeat/README.md" },
 			{ kind: "missing", path: ".codekeat/domain.md" },
 			{ kind: "missing", path: ".codekeat/integrations.md" },
@@ -264,6 +275,7 @@ describe("GitHubReviewInputService", () => {
 					revision: run.headSha,
 					omittedFileCount: 0,
 					files: [
+						...ROOT_MISSING_DOCUMENTS,
 						{ kind: "loaded", path: ".codekeat/README.md", content: "Order workflow" },
 						{ kind: "missing", path: ".codekeat/domain.md" },
 						{ kind: "missing", path: ".codekeat/integrations.md" },
@@ -276,15 +288,10 @@ describe("GitHubReviewInputService", () => {
 				},
 			},
 		});
+		expect(app.blobRequests).toHaveLength(2);
 		expect(
-			app.contentRequests.filter((request) => /\.(?:md|ts)$/.test(request.path)),
-		).toHaveLength(4);
-		expect(
-			app.contentRequests.every(
-				(request) =>
-					request.owner === "contributor" &&
-					request.repo === "codekeat" &&
-					request.ref === run.headSha,
+			app.blobRequests.every(
+				(request) => request.owner === "contributor" && request.repo === "codekeat",
 			),
 		).toBe(true);
 		database.close();
@@ -304,6 +311,11 @@ describe("GitHubReviewInputService", () => {
 				repositoryContext: {
 					repositoryFullName: null,
 					files: [
+						...ROOT_MISSING_DOCUMENTS.map((file) => ({
+							...file,
+							kind: "unavailable",
+							reason: "head_repository_unavailable",
+						})),
 						{
 							kind: "unavailable",
 							path: ".codekeat/README.md",
@@ -328,73 +340,7 @@ describe("GitHubReviewInputService", () => {
 				},
 			},
 		});
-		expect(app.contentRequests).toEqual([]);
-		database.close();
-	});
-
-	it.each([
-		{
-			name: "permission error",
-			response: Object.assign(new Error("Forbidden"), { status: 403 }),
-			reason: "request_failed",
-		},
-		{ name: "directory", response: [], reason: "invalid_response" },
-		{
-			name: "symlink",
-			response: { type: "symlink", target: "example.ts" },
-			reason: "invalid_response",
-		},
-		{
-			name: "submodule reported as file",
-			response: {
-				...githubTextFile("example"),
-				submodule_git_url: "https://github.com/example/submodule",
-			},
-			reason: "invalid_response",
-		},
-		{
-			name: "malformed base64",
-			response: { ...githubTextFile("example"), content: "!!!" },
-			reason: "invalid_response",
-		},
-		{
-			name: "noncanonical base64",
-			response: { ...githubTextFile("a"), content: "YR==" },
-			reason: "invalid_response",
-		},
-		{
-			name: "binary file",
-			response: githubTextFile("\u0000binary"),
-			reason: "invalid_response",
-		},
-		{
-			name: "size mismatch",
-			response: { ...githubTextFile("example"), size: 0 },
-			reason: "invalid_response",
-		},
-		{
-			name: "invalid utf8",
-			response: { type: "file", encoding: "base64", content: "/w==", size: 1 },
-			reason: "invalid_response",
-		},
-	])("distinguishes $name from missing context", async ({ response, reason }) => {
-		const { database, service, run } = createInputFixture(REMOTE_PULL_REQUEST, {
-			contentResults: new Map([[".codekeat/README.md", response]]),
-		});
-
-		expect(await service.load(run)).toMatchObject({
-			kind: "ready",
-			input: {
-				repositoryContext: {
-					files: [
-						{ kind: "unavailable", path: ".codekeat/README.md", reason },
-						{ kind: "missing", path: ".codekeat/domain.md" },
-						{ kind: "missing", path: ".codekeat/integrations.md" },
-						{ kind: "missing", path: "src/example.ts" },
-					],
-				},
-			},
-		});
+		expect(app.blobRequests).toEqual([]);
 		database.close();
 	});
 
@@ -424,215 +370,104 @@ describe("GitHubReviewInputService", () => {
 		}
 		expect(result.input.repositoryContext.omittedFileCount).toBe(0);
 		expect(
-			result.input.repositoryContext.files.map((file) => ({
-				path: file.path,
-				kind: file.kind,
-				length: file.kind === "loaded" ? file.content.length : 0,
-			})),
+			result.input.repositoryContext.files
+				.filter((file) => paths.includes(file.path))
+				.map((file) => ({
+					path: file.path,
+					kind: file.kind,
+					length: file.kind === "loaded" ? file.content.length : 0,
+				})),
 		).toEqual(paths.map((path) => ({ path, kind: "loaded", length: 25_000 })));
-		expect(app.contentRequests.filter((request) => paths.includes(request.path))).toHaveLength(
-			6,
-		);
+		expect(app.blobRequests).toHaveLength(6);
 		database.close();
 	});
 
-	it("loads every changed path once, including files with only deleted lines", async () => {
-		const paths = Array.from({ length: 11 }, (_, index) => `file-${index}.ts`);
-		const deletedFileDiff =
-			"diff --git a/deleted.ts b/deleted.ts\n--- a/deleted.ts\n+++ b/deleted.ts\n@@ -1 +0,0 @@\n-removed\n";
-		const { database, app, service, run } = createInputFixture(
-			{ ...REMOTE_PULL_REQUEST, changed_files: paths.length + 2 },
-			{
-				diff:
-					[...paths, paths[0]!, ".codekeat/README.md"].map(createSmallFileDiff).join("") +
-					deletedFileDiff,
-			},
-		);
-
-		const result = await service.load(run);
-
-		expect(result).toMatchObject({
-			kind: "ready",
-			input: { repositoryContext: { omittedFileCount: 0 } },
+	it("keeps large and unknown-size sources reachable without treating lazy context as missing", async () => {
+		const content = "é".repeat(550_000);
+		const { database, app, service, run } = createInputFixture(REMOTE_PULL_REQUEST, {
+			contentResults: new Map([["src/example.ts", githubTextFile(content)]]),
+			inputTokenLimit: 1_000,
 		});
+		const result = await service.load(run);
+		if (result.kind !== "ready" || result.sources === null) throw new Error("Expected catalog");
+		expect(result.input.repositoryContext.files).toContainEqual(
+			expect.objectContaining({ kind: "catalog", path: "src/example.ts" }),
+		);
+		expect(app.blobRequests).toEqual([]);
 		expect(
-			app.contentRequests
-				.filter((request) => /\.(?:md|ts)$/.test(request.path))
-				.map((request) => request.path),
-		).toEqual([
-			".codekeat/README.md",
-			".codekeat/domain.md",
-			".codekeat/integrations.md",
-			...paths,
-			"deleted.ts",
+			await result.sources.read(
+				{
+					source: { role: "head", path: "src/example.ts" },
+					range: { kind: "lines", startLine: 1, lineCount: 1 },
+				},
+				new AbortController().signal,
+			),
+		).toMatchObject({ kind: "loaded", content });
+		expect(app.blobRequests).toMatchObject([
+			{
+				owner: "takeat",
+				repo: "codekeat",
+				file_sha: gitBlobSha(Buffer.from(content)),
+			},
 		]);
 		database.close();
 	});
 
-	it("records failed directory discovery and stops context reads after cancellation", async () => {
+	it("reports tree discovery failure explicitly and cancels before starting context I/O", async () => {
 		const { database, app, service, run } = createInputFixture(REMOTE_PULL_REQUEST, {
-			contentResults: new Map([
-				[".codekeat", Object.assign(new Error("Forbidden"), { status: 403 })],
-			]),
+			treeError: new Error("Forbidden"),
 		});
 		expect(await service.load(run)).toMatchObject({
 			kind: "ready",
 			input: {
 				repositoryContext: {
 					files: expect.arrayContaining([
-						{ kind: "unavailable", path: ".codekeat", reason: "request_failed" },
+						{ kind: "unavailable", path: "src/example.ts", reason: "request_failed" },
 					]),
 				},
 			},
 		});
-		app.contentRequests.length = 0;
 		const controller = new AbortController();
 		controller.abort();
 		expect(await service.load(run, controller.signal)).toEqual({
 			kind: "failed",
 			errorCode: "github_diff_unavailable",
 		});
-		expect(app.contentRequests).toEqual([]);
+		expect(app.blobRequests).toEqual([]);
 		database.close();
 	});
 
-	it("discovers nested context documents and ignores unsafe paths and symlinks", async () => {
-		const document = "Order invariants\n".repeat(3_000);
-		const { database, app, service, run } = createInputFixture(REMOTE_PULL_REQUEST, {
-			contentResults: new Map([
-				[
-					".codekeat",
-					[
-						directoryEntry(".codekeat/flows", "dir"),
-						directoryEntry(".codekeat/../outside.md", "file"),
-						{ name: "link.md", path: ".codekeat/link.md", type: "symlink" },
-					],
-				],
-				[
-					".codekeat/flows",
-					[
-						directoryEntry(".codekeat/flows/orders.md", "file"),
-						directoryEntry(".codekeat/flows", "dir"),
-					],
-				],
-				[".codekeat/flows/orders.md", githubTextFile(document)],
-			]),
-		});
-
-		const result = await service.load(run);
-		expect(result).toMatchObject({
-			kind: "ready",
-			input: {
-				repositoryContext: {
-					files: expect.arrayContaining([
-						{ kind: "loaded", path: ".codekeat/flows/orders.md", content: document },
-					]),
-				},
-			},
-		});
-		expect(app.contentRequests.every((request) => request.ref === run.headSha)).toBe(true);
-		expect(
-			app.contentRequests.some(
-				(request) =>
-					request.path === ".codekeat/../outside.md" ||
-					request.path === ".codekeat/link.md",
-			),
-		).toBe(false);
-		expect(
-			app.contentRequests.filter((request) => request.path === ".codekeat/flows"),
-		).toHaveLength(1);
-		database.close();
-	});
-
-	it("loads verified local imports and related tests without reading paths outside the repository", async () => {
-		const { database, app, service, run } = createInputFixture(REMOTE_PULL_REQUEST, {
-			contentResults: new Map([
-				[
-					"src/example.ts",
-					githubTextFile(
-						'import {\n  validate\n} from "./validation.js";\nimport bad from "../../../../private";\n',
-					),
-				],
-				[
-					"src",
-					[
-						directoryEntry("src/validation.ts", "file"),
-						directoryEntry("src/example.test.ts", "file"),
-					],
-				],
-				["src/validation.ts", githubTextFile("export const validate = () => true;")],
-				["src/example.test.ts", githubTextFile("expect(validate()).toBe(true);")],
-			]),
-		});
-
-		const result = await service.load(run);
-		expect(result).toMatchObject({
-			kind: "ready",
-			input: {
-				repositoryContext: {
-					files: expect.arrayContaining([
-						{
-							kind: "loaded",
-							path: "src/validation.ts",
-							content: "export const validate = () => true;",
-						},
-						{
-							kind: "loaded",
-							path: "src/example.test.ts",
-							content: "expect(validate()).toBe(true);",
-						},
-					]),
-				},
-			},
-		});
-		expect(
-			app.contentRequests.some(
-				(request) => request.path.includes("private") || request.path.startsWith("../"),
-			),
-		).toBe(false);
-		expect(app.contentRequests.filter((request) => request.path === "src")).toHaveLength(1);
-		database.close();
-	});
-
-	it("uses raw media for large GitHub files while preserving repository and SHA", async () => {
-		const content = "é".repeat(550_000);
-		const { database, app, service, run } = createInputFixture(REMOTE_PULL_REQUEST, {
-			contentResults: new Map([
-				[
-					"src/example.ts",
-					{
-						type: "file",
-						encoding: "none",
-						content: "",
-						size: Buffer.byteLength(content),
-					},
-				],
-			]),
-			rawContentResults: new Map([["src/example.ts", content]]),
-		});
-
-		expect(await service.load(run)).toMatchObject({
-			kind: "ready",
-			input: {
-				repositoryContext: {
-					files: expect.arrayContaining([
-						{ kind: "loaded", path: "src/example.ts", content },
-					]),
-				},
-			},
-		});
-		expect(
-			app.contentRequests.filter((request) => request.path === "src/example.ts"),
-		).toMatchObject([
-			{ owner: "takeat", repo: "codekeat", path: "src/example.ts", ref: run.headSha },
-			{
-				owner: "takeat",
-				repo: "codekeat",
-				path: "src/example.ts",
-				ref: run.headSha,
-				headers: { accept: "application/vnd.github.raw+json" },
-			},
+	it("loads nested documentation and verified local imports from the complete manifest", async () => {
+		const files = new Map([
+			[".codekeat/flows/orders.md", githubTextFile("Order invariants\n".repeat(3_000))],
+			[
+				"src/example.ts",
+				githubTextFile(
+					'import { validate } from "./validation.js";\nimport bad from "../../../../private";\n',
+				),
+			],
+			["src/validation.ts", githubTextFile("export const validate = () => true;")],
+			["src/example.test.ts", githubTextFile("expect(validate()).toBe(true);")],
 		]);
+		const { database, app, service, run } = createInputFixture(REMOTE_PULL_REQUEST, {
+			contentResults: files,
+		});
+		const result = await service.load(run);
+		if (result.kind !== "ready") throw new Error("Expected review input");
+		expect(result.input.repositoryContext.files).toEqual(
+			expect.arrayContaining(
+				[...files].map(([path, file]) => ({
+					kind: "loaded",
+					path,
+					content: Buffer.from(file.content, "base64").toString(),
+				})),
+			),
+		);
+		expect(app.blobRequests.map((request) => request.file_sha).sort()).toEqual(
+			[...files.values()]
+				.map((file) => gitBlobSha(Buffer.from(file.content, "base64")))
+				.sort(),
+		);
 		database.close();
 	});
 
@@ -693,7 +528,7 @@ describe("GitHubReviewInputService", () => {
 			});
 			expect(await service.load(run)).toEqual({ kind: "ignored", ignoreReason });
 			expect(app.diffRequests).toBe(1);
-			expect(app.contentRequests).toEqual([]);
+			expect(app.blobRequests).toEqual([]);
 			database.close();
 		},
 	);
@@ -771,7 +606,7 @@ describe("GitHubReviewInputService", () => {
 
 class RecordedReviewInputApp {
 	diffRequests = 0;
-	readonly contentRequests: GitHubReviewContentLocation[] = [];
+	readonly blobRequests: Parameters<GitHubSourceGitApi["getBlob"]>[0][] = [];
 
 	constructor(
 		private readonly pullRequest: unknown,
@@ -790,20 +625,53 @@ class RecordedReviewInputApp {
 					}),
 				},
 				repos: {
-					getContent: async (location: GitHubReviewContentLocation) => {
-						this.contentRequests.push(location);
-						const results =
-							location.headers?.accept === "application/vnd.github.raw+json"
-								? this.options.rawContentResults
-								: this.options.contentResults;
-						if (!results?.has(location.path)) {
-							throw Object.assign(new Error("Not found"), { status: 404 });
-						}
-						const data = results.get(location.path);
-						if (data instanceof Error) {
-							throw data;
-						}
-						return { data };
+					compareCommitsWithBasehead: async () => ({
+						data: { merge_base_commit: { sha: "b".repeat(40) } },
+					}),
+				},
+				git: {
+					getCommit: async ({ commit_sha }: { commit_sha: string }) => ({
+						data: { sha: commit_sha, tree: { sha: "d".repeat(40) } },
+					}),
+					getTree: async () => {
+						if (this.options.treeError !== undefined) throw this.options.treeError;
+						return {
+							data: {
+								sha: "d".repeat(40),
+								truncated: false,
+								tree: [...this.files()].map(([path, file]) => ({
+									path,
+									sha: gitBlobSha(Buffer.from(file.content, "base64")),
+									type: "blob",
+									mode: "100644",
+									size: file.size,
+								})),
+							},
+						};
+					},
+					getBlob: async (location: {
+						owner: string;
+						repo: string;
+						file_sha: string;
+						request: { signal: AbortSignal };
+					}) => {
+						this.blobRequests.push(location);
+						location.request.signal.throwIfAborted();
+						const match = [...this.files()].find(
+							([, file]) =>
+								gitBlobSha(Buffer.from(file.content, "base64")) ===
+								location.file_sha,
+						);
+						if (match === undefined) throw new Error("Unknown fixture blob");
+						const [, file] = match;
+						return {
+							data: {
+								sha: location.file_sha,
+								encoding: "base64",
+								content: file.content,
+								size: file.size,
+							},
+						};
 					},
 				},
 			},
@@ -813,12 +681,21 @@ class RecordedReviewInputApp {
 			},
 		};
 	}
+	private files(): ReadonlyMap<string, z.infer<typeof FIXTURE_FILE_SCHEMA>> {
+		return new Map(
+			[...(this.options.contentResults ?? new Map())].map(([path, data]) => [
+				path,
+				FIXTURE_FILE_SCHEMA.parse(data),
+			]),
+		);
+	}
 }
 
 interface ReviewInputFixtureOptions {
 	readonly diff?: string;
 	readonly contentResults?: ReadonlyMap<string, unknown>;
-	readonly rawContentResults?: ReadonlyMap<string, unknown>;
+	readonly inputTokenLimit?: number;
+	readonly treeError?: Error;
 	readonly pullRequestAfterDiff?: unknown;
 }
 
@@ -846,10 +723,15 @@ function createInputFixture(
 		status: "active",
 	});
 	const app = new RecordedReviewInputApp(pullRequest, options);
+	const artifactDirectory = mkdtempSync(join(tmpdir(), "codekeat-input-"));
+	artifactDirectories.push(artifactDirectory);
 	return {
 		database,
 		app,
-		service: new GitHubReviewInputService(app, database.githubAccessRepository),
+		service: new GitHubReviewInputService(app, database.githubAccessRepository, {
+			artifactDirectory,
+			getInputTokenLimit: async () => options.inputTokenLimit ?? 1_000_000,
+		}),
 		run: {
 			id: "review-run-1",
 			githubInstallationId: 10,
@@ -882,9 +764,16 @@ function createSmallFileDiff(path: string): string {
 	return `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -1 +1 @@\n-old\n+new\n`;
 }
 
-function directoryEntry(
-	path: string,
-	type: "file" | "dir",
-): { readonly name: string; readonly path: string; readonly type: "file" | "dir" } {
-	return { name: path.split("/").at(-1)!, path, type };
+const FIXTURE_FILE_SCHEMA = z.object({
+	type: z.literal("file"),
+	encoding: z.literal("base64"),
+	content: z.string(),
+	size: z.number().int().nonnegative(),
+});
+const ROOT_MISSING_DOCUMENTS = ["AGENTS.md", "README.md", ".codekeat.yml"].map((path) => ({
+	kind: "missing",
+	path,
+}));
+function gitBlobSha(bytes: Buffer): string {
+	return createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
 }

@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import {
 	createGoogleContextCapacityFetch,
+	createGoogleContextCapacityClient,
 	ReviewContextCapacityExceeded,
 } from "#integrations/gemini";
 
@@ -45,7 +46,94 @@ describe("Google context capacity", () => {
 		});
 		expect(calls.filter((call) => call.url.endsWith(":generateContent"))).toHaveLength(20);
 		expect(fetcher).toHaveBeenCalledTimes(22);
-		expect(calls.at(-1)).toEqual({ url: URL, init: INIT });
+		expect(calls.at(-1)).toMatchObject({ url: URL, init: INIT });
+	});
+	it.each([
+		{ name: "requests", requestsPerMinute: 1, inputTokensPerMinute: null },
+		{ name: "input tokens", requestsPerMinute: null, inputTokensPerMinute: 100 },
+	])("waits for the configured minute budget for $name", async (limits) => {
+		vi.useFakeTimers();
+		const { fetcher, calls } = harness(60);
+		const client = createGoogleContextCapacityClient(fetcher, "test", {
+			...limits,
+			concurrency: 2,
+		});
+		await client.fetch(URL, INIT);
+		const second = client.fetch(URL, INIT);
+		await vi.advanceTimersByTimeAsync(59_999);
+		expect(calls.filter((call) => call.url.endsWith(":generateContent"))).toHaveLength(1);
+		await vi.advanceTimersByTimeAsync(1);
+		await second;
+		expect(calls.filter((call) => call.url.endsWith(":generateContent"))).toHaveLength(2);
+		expect(calls.filter((call) => call.url.endsWith(":countTokens"))).toHaveLength(1);
+	});
+	it("exposes the local token budget as effective capacity and rejects impossible admission", async () => {
+		const { fetcher, calls } = harness(60, 1_000);
+		const client = createGoogleContextCapacityClient(fetcher, "test", {
+			concurrency: 2,
+			requestsPerMinute: null,
+			inputTokensPerMinute: 50,
+		});
+		await expect(
+			client.getModelCapacity("gemini-3.8-flash", new AbortController().signal),
+		).resolves.toEqual({ inputTokenLimit: 50 });
+		await expect(client.fetch(URL, INIT)).rejects.toMatchObject({
+			inputTokens: 60,
+			inputTokenLimit: 50,
+		});
+		expect(calls.some((call) => call.url.endsWith(":generateContent"))).toBe(false);
+	});
+	it("shares Retry-After cooldown and cancels a caller waiting for admission", async () => {
+		vi.useFakeTimers();
+		const { fetcher, calls } = harness();
+		fetcher
+			.mockResolvedValueOnce(Response.json({ inputTokenLimit: 100 }))
+			.mockResolvedValueOnce(Response.json({ totalTokens: 100 }))
+			.mockResolvedValueOnce(
+				new Response(null, { status: 429, headers: { "Retry-After": "2" } }),
+			);
+		const client = createGoogleContextCapacityClient(fetcher, "test");
+		await client.fetch(URL, INIT);
+		const parent = new AbortController();
+		const cancelled = client
+			.fetch(URL, { ...INIT, signal: parent.signal })
+			.catch((error: unknown) => error);
+		await vi.advanceTimersByTimeAsync(1);
+		parent.abort();
+		expect(await cancelled).toBeInstanceOf(Error);
+		const next = client.fetch(URL, INIT);
+		await vi.advanceTimersByTimeAsync(1_998);
+		expect(calls.some((call) => call.url.endsWith(":generateContent"))).toBe(false);
+		await vi.advanceTimersByTimeAsync(1);
+		await next;
+		expect(calls.filter((call) => call.url.endsWith(":generateContent"))).toHaveLength(1);
+	});
+	it("holds shared concurrency permits until response bodies finish", async () => {
+		const bodies: ReadableStreamDefaultController<Uint8Array>[] = [];
+		const fetcher = vi.fn<typeof fetch>().mockImplementation(async (url) => {
+			if (url.toString().endsWith(":countTokens")) return Response.json({ totalTokens: 1 });
+			if (url.toString().endsWith(":generateContent"))
+				return new Response(
+					new ReadableStream<Uint8Array>({
+						start: (controller) => {
+							bodies.push(controller);
+						},
+					}),
+				);
+			return Response.json({ inputTokenLimit: 100 });
+		});
+		const client = createGoogleContextCapacityClient(fetcher, "test", {
+			concurrency: 2,
+			requestsPerMinute: null,
+			inputTokensPerMinute: null,
+		});
+		const results = [client.fetch(URL, INIT), client.fetch(URL, INIT), client.fetch(URL, INIT)];
+		await vi.waitFor(() => expect(bodies).toHaveLength(2));
+		bodies[0]!.close();
+		await vi.waitFor(() => expect(bodies).toHaveLength(3));
+		bodies[1]!.close();
+		bodies[2]!.close();
+		await Promise.all(results);
 	});
 	it("shares an in-flight count without cancelling another caller's generation", async () => {
 		const { guarded, fetcher, calls } = harness();

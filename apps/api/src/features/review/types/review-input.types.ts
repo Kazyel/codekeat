@@ -1,9 +1,12 @@
 import type { ReviewModelConfiguration } from "../../models/index.js";
 import type { ReviewRunErrorCode, RunnableReviewRun } from "./review-repository.types.js";
 import type { ReviewFinding, ReviewRunIgnoreReason } from "./review-run.types.js";
+import type { ReviewSourceCatalog, ReviewSourceReference } from "./review-source.types.js";
+import type { ReviewMetricRecorder } from "./review-metrics.types.js";
 
 export type ReviewContextFile =
 	| { readonly kind: "loaded"; readonly path: string; readonly content: string }
+	| { readonly kind: "catalog"; readonly path: string; readonly source: ReviewSourceReference }
 	| { readonly kind: "missing"; readonly path: string }
 	| {
 			readonly kind: "unavailable";
@@ -67,6 +70,8 @@ export interface ReviewUsageEvent {
 export interface ReviewExecution {
 	readonly signal: AbortSignal;
 	readonly recordUsage: (event: ReviewUsageEvent) => void;
+	readonly sources: ReviewSourceCatalog | null;
+	readonly recordMetric: ReviewMetricRecorder;
 }
 
 export interface ReviewModelResult {
@@ -124,10 +129,18 @@ export interface ReviewFindingJudge {
 export type ReviewInputLoadResult =
 	| { readonly kind: "failed"; readonly errorCode: ReviewRunErrorCode }
 	| { readonly kind: "ignored"; readonly ignoreReason: ReviewRunIgnoreReason }
-	| { readonly kind: "ready"; readonly input: ReviewInput };
+	| {
+			readonly kind: "ready";
+			readonly input: ReviewInput;
+			readonly sources: ReviewSourceCatalog | null;
+	  };
 
 export interface ReviewInputSource {
-	load(run: RunnableReviewRun, signal: AbortSignal): Promise<ReviewInputLoadResult>;
+	load(
+		run: RunnableReviewRun,
+		signal: AbortSignal,
+		recordMetric: ReviewMetricRecorder,
+	): Promise<ReviewInputLoadResult>;
 }
 
 export interface ReviewModel {

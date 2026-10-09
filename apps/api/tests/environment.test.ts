@@ -20,8 +20,38 @@ const VALID_ENVIRONMENT = {
 };
 
 describe("loadEnvironment", () => {
+	it("loads local model admission budgets independently from parallel review units", () => {
+		expect(
+			loadEnvironment({
+				...VALID_ENVIRONMENT,
+				REVIEW_UNIT_CONCURRENCY: "3",
+				REVIEW_MODEL_CONCURRENCY: "4",
+				GOOGLE_REQUESTS_PER_MINUTE: "20",
+				GOOGLE_INPUT_TOKENS_PER_MINUTE: "100000",
+			}),
+		).toMatchObject({
+			reviewUnitConcurrency: 3,
+			reviewModelConcurrency: 4,
+			googleRequestsPerMinute: 20,
+			googleInputTokensPerMinute: 100000,
+		});
+		expect(
+			loadEnvironment({ ...VALID_ENVIRONMENT, GOOGLE_INPUT_TOKENS_PER_MINUTE: "" })
+				.googleInputTokensPerMinute,
+		).toBeNull();
+		expect(() =>
+			loadEnvironment({ ...VALID_ENVIRONMENT, GOOGLE_INPUT_TOKENS_PER_MINUTE: "0" }),
+		).toThrow("GOOGLE_INPUT_TOKENS_PER_MINUTE");
+	});
+
 	it("defaults to five concurrent reviews", () => {
-		expect(loadEnvironment(VALID_ENVIRONMENT)).toMatchObject({ reviewConcurrency: 5 });
+		expect(loadEnvironment(VALID_ENVIRONMENT)).toMatchObject({
+			reviewConcurrency: 5,
+			reviewUnitConcurrency: 2,
+			reviewModelConcurrency: 5,
+			googleRequestsPerMinute: null,
+			googleInputTokensPerMinute: null,
+		});
 	});
 
 	it.each(["1", "3"])("accepts REVIEW_CONCURRENCY=%s", (value) => {
