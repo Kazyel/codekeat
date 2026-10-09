@@ -18,7 +18,7 @@ bloqueia merge, cria Checks ou aprova/reprova pull requests.
 ## Pré-requisitos
 
 - Node.js 24 ou superior
-- pnpm 10 ou superior, ativado via Corepack
+- pnpm 10 (o repositório fixa a versão 10.33.2), ativado via Corepack
 - uma GitHub App
 - uma chave de API Gemini
 - Docker e Docker Compose, apenas para executar os containers
@@ -56,12 +56,20 @@ ALLOWED_GITHUB_ACCOUNTS=seu-login-ou-organizacao
 DASHBOARD_API_TOKEN=
 INITIAL_ADMIN_EMAIL=seu-email@empresa.com
 INITIAL_ADMIN_PASSWORD=uma-senha-com-pelo-menos-8-caracteres
+DATABASE_PATH=../../packages/database/data/codekeat.db
+REVIEW_MODE=advisory
 ```
 
-`PRIVATE_KEY` é uma alternativa a `PRIVATE_KEY_PATH`, mas use apenas uma das duas. O administrador é
-criado na primeira inicialização; alterar essas variáveis depois não redefine a senha existente.
+Baixe a chave privada da GitHub App e configure `PRIVATE_KEY_PATH` com o caminho do arquivo PEM. Como
+alternativa, use `PRIVATE_KEY` com o PEM ou seu conteúdo em Base64. Para Docker, use `PRIVATE_KEY`: o
+Compose não monta o arquivo indicado por `PRIVATE_KEY_PATH` no container. Não versione a chave.
 
-O modelo Gemini e as tarifas são definidos no catálogo global em **Modelos** no dashboard. A migration
+`ALLOWED_GITHUB_ACCOUNTS` aceita logins de organizações ou usuários separados por vírgula e deve conter
+ao menos uma conta. `REVIEW_MODE` aceita somente `advisory`. `WEBHOOK_PROXY_URL` é opcional para o
+desenvolvimento com Smee. O administrador é criado na primeira inicialização; mudar as variáveis
+`INITIAL_ADMIN_*` depois não altera sua conta nem sua senha. A senha deve ter de 8 a 256 caracteres.
+
+O modelo Gemini e as tarifas são definidos no catálogo global em **Modelos** no painel. A migração
 inicial seleciona o Gemini 3.8 Flash; alterações afetam somente novas reviews.
 
 `TAKEAT_MCP_URL` e `TAKEAT_MCP_TOKEN_URL` devem usar HTTPS. A API troca as credenciais permanentes
@@ -101,7 +109,8 @@ pnpm dev:api
 ```
 
 O painel usa e-mail e senha locais. Acesse `http://localhost:3501/login` com as credenciais de
-`INITIAL_ADMIN_EMAIL` e `INITIAL_ADMIN_PASSWORD`.
+`INITIAL_ADMIN_EMAIL` e `INITIAL_ADMIN_PASSWORD`. O administrador pode adicionar, editar e selecionar
+modelos em **Modelos**; as páginas de conexões, revisões e métricas consultam os dados da API.
 
 ## Configurar a GitHub App
 
@@ -160,13 +169,14 @@ Um PR em draft, uma conta fora da allowlist ou um repositório removido da insta
 
 ## Banco local e painel
 
-O SQLite está em `packages/database/data/codekeat.db` por padrão. Para inspecioná-lo com Drizzle Studio:
+No desenvolvimento local, o SQLite fica em `packages/database/data/codekeat.db`. A API aplica as
+migrações ao iniciar. Para inspecionar o banco com Drizzle Studio:
 
 ```sh
 pnpm db:studio
 ```
 
-O painel é somente leitura e consome a API internamente; ele não acessa o arquivo SQLite no navegador.
+O painel acessa a API pelo servidor; o navegador não acessa o SQLite nem recebe `DASHBOARD_API_TOKEN`.
 
 ## Docker
 
@@ -178,14 +188,20 @@ cp apps/api/.env.example apps/api/.env
 cp apps/web/.env.example apps/web/.env
 ```
 
-Depois de preencher `apps/api/.env` e `apps/web/.env`, execute:
+Em `.env`, configure `CODEKEAT_DATA_DIR` para o diretório que guardará o SQLite. O arquivo de exemplo
+usa `./data`; sem essa variável, o Compose usa `./packages/database/data`. Também é possível ajustar
+`BIND_ADDRESS`, `API_PORT` e `WEB_PORT`. Em `apps/api/.env`, configure `PRIVATE_KEY` com o PEM em
+Base64, pois um caminho local em `PRIVATE_KEY_PATH` não fica disponível no container. Preencha os
+demais valores de `apps/api/.env` e `apps/web/.env`, mantendo o mesmo `DASHBOARD_API_TOKEN` nos dois.
+
+Valide a configuração e inicie os containers:
 
 ```sh
 pnpm env:check
 pnpm docker:up
 ```
 
-O Compose usa uma única réplica da API e persiste o SQLite em `CODEKEAT_DATA_DIR` (por padrão, `./packages/database/data`).
+O Compose usa uma única réplica da API e persiste o SQLite em `CODEKEAT_DATA_DIR`.
 Os serviços ficam ligados em loopback por padrão; coloque um proxy HTTPS na frente deles para uso externo.
 
 ## Verificação
