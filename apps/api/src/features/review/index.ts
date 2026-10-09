@@ -82,3 +82,5 @@ export {
 	type ReviewSourceBackend,
 } from "./services/review-source-catalog.service.js";
 export { ReviewWorkRepository } from "./repositories/review-work.repository.js";
+export { ReviewTelemetryRepository } from "./repositories/review-telemetry.repository.js";
+export { createReviewTelemetryController } from "./controllers/review-telemetry.controller.js";
