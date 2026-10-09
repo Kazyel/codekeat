@@ -103,7 +103,7 @@ export class GitHubReviewInputService implements ReviewInputSource {
 			if (currentIgnoreReason !== null) {
 				return { kind: "ignored", ignoreReason: currentIgnoreReason };
 			}
-			const chunks = createReviewInputChunks(diff);
+			const chunks = createCompleteReviewChunks(diff, pullRequest.changed_files);
 			const repositoryContext = await loadGitHubReviewContext(
 				octokit.rest.repos,
 				headRepositoryFullName(pullRequest.head.repo),
@@ -178,6 +178,17 @@ function getPullRequestIgnoreReason(
 		return "draft_pull_request";
 	}
 	return pullRequest.head.sha === headSha ? null : "superseded_head_sha";
+}
+
+function createCompleteReviewChunks(
+	diff: string,
+	expectedFiles: number,
+): readonly ReviewInputChunk[] {
+	const chunks = createReviewInputChunks(diff);
+	const receivedFiles = new Set(chunks.flatMap((chunk) => [...chunk.changedLines.keys()]));
+	if (receivedFiles.size !== expectedFiles)
+		throw new Error("GitHub returned an incomplete diff.");
+	return chunks;
 }
 
 export function createReviewInputChunks(diff: string): readonly ReviewInputChunk[] {

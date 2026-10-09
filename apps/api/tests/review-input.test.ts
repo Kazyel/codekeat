@@ -165,6 +165,19 @@ const REMOTE_PULL_REQUEST = {
 };
 
 describe("GitHubReviewInputService", () => {
+	it.each(["", SAMPLE_DIFF])("rejects incomplete diffs before fetching context", async (diff) => {
+		const { database, app, service, run } = createInputFixture(
+			{ ...REMOTE_PULL_REQUEST, changed_files: 2 },
+			{ diff },
+		);
+
+		expect(await service.load(run)).toEqual({
+			kind: "failed",
+			errorCode: "github_diff_unavailable",
+		});
+		expect(app.contentRequests).toEqual([]);
+		database.close();
+	});
 	it("reads Git quoted UTF8 paths at the head SHA and anchors the same path for the judge", async () => {
 		const { database, app, service, run } = createInputFixture(REMOTE_PULL_REQUEST, {
 			diff: QUOTED_UTF8_DIFF,
@@ -394,12 +407,15 @@ describe("GitHubReviewInputService", () => {
 			"second.ts",
 			"third.ts",
 		];
-		const { database, app, service, run } = createInputFixture(REMOTE_PULL_REQUEST, {
-			diff: paths.map(createSmallFileDiff).join(""),
-			contentResults: new Map(
-				paths.map((path) => [path, githubTextFile("x".repeat(25_000))]),
-			),
-		});
+		const { database, app, service, run } = createInputFixture(
+			{ ...REMOTE_PULL_REQUEST, changed_files: paths.length },
+			{
+				diff: paths.map(createSmallFileDiff).join(""),
+				contentResults: new Map(
+					paths.map((path) => [path, githubTextFile("x".repeat(25_000))]),
+				),
+			},
+		);
 
 		const result = await service.load(run);
 
@@ -424,11 +440,14 @@ describe("GitHubReviewInputService", () => {
 		const paths = Array.from({ length: 11 }, (_, index) => `file-${index}.ts`);
 		const deletedFileDiff =
 			"diff --git a/deleted.ts b/deleted.ts\n--- a/deleted.ts\n+++ b/deleted.ts\n@@ -1 +0,0 @@\n-removed\n";
-		const { database, app, service, run } = createInputFixture(REMOTE_PULL_REQUEST, {
-			diff:
-				[...paths, paths[0]!, ".codekeat/README.md"].map(createSmallFileDiff).join("") +
-				deletedFileDiff,
-		});
+		const { database, app, service, run } = createInputFixture(
+			{ ...REMOTE_PULL_REQUEST, changed_files: paths.length + 2 },
+			{
+				diff:
+					[...paths, paths[0]!, ".codekeat/README.md"].map(createSmallFileDiff).join("") +
+					deletedFileDiff,
+			},
+		);
 
 		const result = await service.load(run);
 
