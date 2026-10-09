@@ -65,6 +65,11 @@ const INPUT: ReviewInput = {
 		files: [
 			{
 				kind: "loaded",
+				path: "src/example.ts",
+				content: "function example() {\n return 'new';\n}",
+			},
+			{
+				kind: "loaded",
 				path: ".codekeat/domain.md",
 				content: "Rascunhos ainda não exigem pagamento.",
 			},
@@ -87,6 +92,34 @@ const FINDING = {
 	title: "A concrete failure",
 	rationale: "The added line permits invalid input.",
 } as const;
+const CONCLUSION = {
+	status: "complete",
+	reviewedPaths: ["src/example.ts"],
+	hypotheses: [
+		{
+			path: "src/example.ts",
+			line: 2,
+			scenario: "Valid caller input",
+			expectedBehavior: "Preserve caller contract",
+			observedBehavior: "Contract preserved in the supplied sources",
+			outcome: "refuted",
+			evidence: [
+				{
+					path: "src/example.ts",
+					role: "head",
+					revision: INPUT.headSha,
+					startLine: 1,
+					endLine: 2,
+				},
+			],
+			missingEvidence: [],
+		},
+	],
+} as const;
+const CANDIDATE_CONCLUSION = {
+	...CONCLUSION,
+	hypotheses: [{ ...CONCLUSION.hypotheses[0], outcome: "candidate" as const }],
+};
 const EMPTY_BATCH: ReviewFindingJudgeInput = { candidates: [], evidence: [] };
 const READ_ARGUMENTS = { path: "src/validator.ts", ref: INPUT.headSha };
 
@@ -158,7 +191,24 @@ function outputResponse(
 	output: McpJsonObject = { findings: [] },
 	usage: McpJsonObject | null = USAGE,
 ): Response {
-	return googleResponse([{ text: JSON.stringify(output) }], usage);
+	return googleResponse(
+		[
+			{
+				text: JSON.stringify(
+					"findings" in output
+						? {
+								conclusion:
+									Array.isArray(output.findings) && output.findings.length > 0
+										? CANDIDATE_CONCLUSION
+										: CONCLUSION,
+								...output,
+							}
+						: output,
+				),
+			},
+		],
+		usage,
+	);
 }
 
 function toolResponse(
@@ -313,7 +363,26 @@ describe("GeminiReviewService through the Google AI SDK transport", () => {
 									thoughtSignature: "signature",
 								},
 							]),
-							outputResponse(),
+							outputResponse({
+								findings: [],
+								conclusion: {
+									...CONCLUSION,
+									hypotheses: [
+										{
+											...CONCLUSION.hypotheses[0],
+											evidence: [
+												{
+													path: reference.path,
+													role: reference.role,
+													revision: reference.revision,
+													startLine: 1,
+													endLine: 1,
+												},
+											],
+										},
+									],
+								},
+							}),
 						]
 					: [outputResponse()];
 			let counts = 0;
@@ -393,7 +462,9 @@ describe("GeminiReviewService through the Google AI SDK transport", () => {
 		expect(JSON.stringify(requests[1])).toContain("investigation_reference");
 		expect(JSON.stringify(requests[1])).not.toContain("validateDraft() permits unpaid orders");
 		expect(result.investigation).toMatchObject({
-			kind: "available",
+			kind: "verified",
+			context: "available",
+			conclusion: CONCLUSION,
 			exchanges: [{ tool: "read_file", responseJson: expect.stringContaining("sha256:") }],
 		});
 	});
@@ -435,10 +506,16 @@ describe("GeminiReviewService through the Google AI SDK transport", () => {
 									functionResponse: z
 										.object({
 											response: z.object({
-												content: z.object({
-													content: z.string(),
-													nextRange: z.json().nullable(),
-												}),
+												content: z.discriminatedUnion("kind", [
+													z.object({
+														kind: z.literal("loaded"),
+														content: z.string(),
+														nextRange: z.json().nullable(),
+													}),
+													z.object({
+														kind: z.literal("archived_tool_result"),
+													}),
+												]),
 											}),
 										})
 										.optional(),
@@ -454,7 +531,8 @@ describe("GeminiReviewService through the Google AI SDK transport", () => {
 				const previous = request.contents
 					.flatMap((entry) => entry.parts)
 					.flatMap((part) =>
-						part.functionResponse === undefined
+						part.functionResponse === undefined ||
+						part.functionResponse.response.content.kind !== "loaded"
 							? []
 							: [part.functionResponse.response.content],
 					)
@@ -575,7 +653,9 @@ describe("GeminiReviewService through the Google AI SDK transport", () => {
 			expect.any(AbortSignal),
 		);
 		expect(result.investigation).toEqual({
-			kind: "available",
+			kind: "verified",
+			context: "available",
+			conclusion: CANDIDATE_CONCLUSION,
 			exchanges: [
 				{
 					tool: "read_file",
@@ -608,7 +688,12 @@ describe("GeminiReviewService through the Google AI SDK transport", () => {
 		const { model, requests } = createHarness([outputResponse()]);
 		await expect(model.review(MODEL, INPUT, CHUNK)).resolves.toEqual({
 			findings: [],
-			investigation: { kind: "available", exchanges: [] },
+			investigation: {
+				kind: "verified",
+				context: "available",
+				exchanges: [],
+				conclusion: CONCLUSION,
+			},
 			usage: EXPECTED_USAGE,
 		});
 		expect(requests[0]?.generationConfig).toMatchObject({
@@ -630,10 +715,15 @@ describe("GeminiReviewService through the Google AI SDK transport", () => {
 			{ ...INPUT, githubInstallationAccountLogin: "Kazyel" },
 			CHUNK,
 		);
-		expect(result.investigation).toEqual({ kind: "not_enabled" });
+		expect(result.investigation).toEqual({
+			kind: "verified",
+			context: "not_enabled",
+			exchanges: [],
+			conclusion: CONCLUSION,
+		});
 		expect(source.listTools).not.toHaveBeenCalled();
 		expect(source.callTool).not.toHaveBeenCalled();
-		expect(requests[0]?.tools).toBeUndefined();
+		expect(JSON.stringify(requests[0]?.tools)).not.toContain("read_file");
 	});
 
 	it("falls back after a real tool error and discards evidence from that attempt", async () => {
@@ -654,12 +744,17 @@ describe("GeminiReviewService through the Google AI SDK transport", () => {
 		const warn = vi.spyOn(logger, "warn");
 		await expect(model.review(MODEL, INPUT, CHUNK)).resolves.toEqual({
 			findings: [],
-			investigation: { kind: "unavailable" },
+			investigation: {
+				kind: "verified",
+				context: "unavailable",
+				exchanges: [],
+				conclusion: CONCLUSION,
+			},
 			usage: { inputTokens: 360, outputTokens: 42, cacheTokens: 120, costUsdMicros: 346.5 },
 		});
 		expect(fetchMock).toHaveBeenCalledTimes(3);
 		expect(source.callTool).toHaveBeenCalledTimes(2);
-		expect(requests[2]?.tools).toBeUndefined();
+		expect(JSON.stringify(requests[2]?.tools)).not.toContain("read_file");
 		const fallbackPrompt = JSON.stringify(requests[2]?.contents);
 		expect(fallbackPrompt).toContain("Rascunhos ainda não exigem pagamento.");
 		expect(fallbackPrompt).toContain("unavailable");
@@ -703,7 +798,7 @@ describe("GeminiReviewService through the Google AI SDK transport", () => {
 		expect(requests.slice(0, 6).every((request) => request.tools !== undefined)).toBe(true);
 		expect(requests[6]?.tools).toBeUndefined();
 		expect(result.findings).toEqual([]);
-		if (result.investigation.kind !== "available")
+		if (result.investigation.kind !== "verified")
 			throw new Error("Expected investigation evidence.");
 		expect(result.investigation.exchanges).toHaveLength(6);
 	});
@@ -745,7 +840,12 @@ describe("GeminiReviewService through the Google AI SDK transport", () => {
 		]);
 		await expect(model.review(MODEL, INPUT, CHUNK)).resolves.toMatchObject({
 			findings: [],
-			investigation: { kind: "available", exchanges: [] },
+			investigation: {
+				kind: "verified",
+				context: "available",
+				exchanges: [],
+				conclusion: CONCLUSION,
+			},
 		});
 		expect(source.callTool).not.toHaveBeenCalled();
 		expect(requests).toHaveLength(2);

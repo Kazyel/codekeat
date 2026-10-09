@@ -25,6 +25,8 @@ export function createReviewSystemPrompt(): string {
 		"Leia .codekeat/README.md como mapa do projeto; consulte documentos referenciados pertinentes ao domínio alterado, sem carregar documentação irrelevante.",
 		"Use ferramentas MCP para investigar funções completas, chamadores, validações, testes e consumidores antes de concluir sobre a mudança.",
 		"As ferramentas source_list, source_read, source_search e source_related acessam somente o snapshot deste PR. head é o SHA revisado; before é o merge-base. Prefira essas fontes para provar o comportamento do PR.",
+		"Use source_evidence para reunir a função alterada em head/before, dependências, testes e ocorrências do símbolo. Ocorrência lexical não comprova identidade semântica; confirme o consumidor antes de usá-lo como prova.",
+		"source_search percorre páginas no host e informa complete/partial e continuação. Uma busca parcial vazia não prova ausência de chamadores.",
 		"Páginas de fontes informam intervalos e continuação. Leia as páginas necessárias, incluindo fronteiras de funções, antes de concluir; uma página nunca representa o arquivo inteiro por omissão.",
 		"Consulte repositórios relacionados somente quando o fluxo afetado atravessar um contrato ou integração; use .codekeat/integrations.md para localizá-los dentro do acesso permitido.",
 		"Compare o comportamento anterior e posterior quando necessário para demonstrar que a mudança introduziu o defeito.",
@@ -43,7 +45,12 @@ export function createReviewSystemPrompt(): string {
 		"Não crie observações vagas, especulativas, duplicadas ou de estilo sem impacto claro.",
 		"Calibre a severidade: critical para exploração, segredos ou perda ampla de dados; high para falha provável de impacto grave; medium para comportamento incorreto determinístico e localizado; low para risco concreto menor.",
 		"Na dúvida sobre a existência ou o impacto do problema, não reporte.",
-		"Retorne um array vazio quando não houver findings.",
+		"Retorne findings vazio quando não houver defeitos comprovados, com conclusion registrando a investigação feita. Para cada arquivo reportável, descreva ao menos um cenário concreto, o comportamento esperado e observado, fontes com revisão e o resultado refuted/candidate/unresolved.",
+		"Em guardas e retornos antecipados alterados, verifique entradas que tornam o predicado verdadeiro e falso, zero, igualdade, limites e combinações permitidas pelos validadores. Para autorização, ordem de gravação e concorrência, examine cenários específicos do fluxo. Essas verificações não geram findings automaticamente.",
+		"Use investigation_checkpoint para registrar cenários e lacunas quando precisar de outra rodada de busca; nextTools orienta as ferramentas da próxima etapa. Fontes inline podem responder ao cenário sem uma chamada extra.",
+		"conclusion complete exige todos os arquivos reportáveis examinados, fontes na revisão correta e nenhuma hipótese unresolved. Use incomplete com gaps quando faltar evidência relevante; não converta indisponibilidade em ausência de defeitos. Escreva fatos e cenários verificáveis, sem raciocínio interno livre ou segredos.",
+		"Cada hipótese candidate deve ter um finding no mesmo path e line, e cada finding deve ter uma hipótese candidate correspondente. Hipóteses refuted ou unresolved não são findings.",
+		"Respostas antigas de ferramentas podem aparecer como archived_tool_result. O original integral está na referência indicada e pode ser recuperado com source_read. Preserve os cenários verificados e as lacunas ao continuar.",
 		"O modo inline inclui documentos e arquivos completos no SHA indicado. No modo catalog, use source_list para navegar no manifesto paginado e source_read para ler as fontes e a descrição completa do PR.",
 		"Fontes do catálogo que não vieram inline continuam disponíveis. Leia o contexto pertinente com source_read; catálogo não significa fonte ausente. Consulte também .codekeat e testes relacionados antes de concluir.",
 		"Ausência ou falha de leitura não demonstra ausência de validação ou de consumidor. Não reporte suspeitas que dependam de dados indisponíveis.",
@@ -119,7 +126,7 @@ export function createJudgeSystemPrompt(): string {
 		"Não crie paths, linhas ou candidatos. Retorne exatamente um julgamento para cada index recebido.",
 		"Arquivos e documentos do contexto inicial são completos na revisão indicada. Fontes ausentes ou indisponíveis não comprovam ausência de validação.",
 		"Em cada evidência, diff é o único trecho reportável. referenceBefore, referenceAfter, contexto inicial e investigation servem apenas como contexto e não podem originar findings.",
-		"investigation registra consultas reais da geração. available com exchanges vazio significa que nenhuma consulta foi feita; unavailable ou not_enabled não fornecem evidências MCP.",
+		"investigation registra consultas reais da geração. verified contém os cenários declarados e a conclusão da investigação; valide suas alegações nas fontes, pois a concordância do gerador não comprova correção. Os estados históricos available, unavailable e not_enabled não incluem esse registro.",
 	].join("\n\n");
 }
 
@@ -159,7 +166,7 @@ function createReviewBackground(
 ): string {
 	if (contextMode !== "inline") return createCatalogBackground(input, "inline_body");
 	const index = repositoryContextIndex(input.repositoryContext);
-	const relevant = relevantContextFiles(input.repositoryContext, index, paths);
+	const relevant = reviewInlineContextFiles(input, paths);
 	return [
 		`Repositório: ${input.repositoryFullName}`,
 		`PR: #${input.pullRequestNumber}`,
@@ -167,8 +174,9 @@ function createReviewBackground(
 		`Descrição: ${input.body ?? "(sem descrição)"}`,
 		`SHA base: ${input.baseSha}`,
 		`SHA head: ${input.headSha}`,
-		`Contexto inicial do repositório: ${JSON.stringify({ ...input.repositoryContext, files: relevant })}`,
+		`Documentos compartilhados do repositório: ${JSON.stringify(input.repositoryContext.files.filter(sharedContextFile))}`,
 		`Manifesto de fontes disponíveis: ${index.manifest}`,
+		`Contexto inicial do repositório: ${JSON.stringify({ ...input.repositoryContext, files: relevant.filter((file) => !sharedContextFile(file)) })}`,
 	].join("\n\n");
 }
 
@@ -199,9 +207,28 @@ function relevantContextFiles(
 	return context.files.filter(
 		(file) =>
 			file.kind !== "catalog" &&
-			(file.path === ".codekeat" ||
-				file.path.startsWith(".codekeat/") ||
-				selected.has(index.componentByPath.get(file.path))),
+			(sharedContextFile(file) || selected.has(index.componentByPath.get(file.path))),
+	);
+}
+
+/** Matches the loaded sources actually delivered by inline review/judge packets. */
+export function reviewInlineContextFiles(
+	input: ReviewInput,
+	paths: readonly string[],
+): readonly ReviewContextFile[] {
+	return relevantContextFiles(
+		input.repositoryContext,
+		repositoryContextIndex(input.repositoryContext),
+		paths,
+	);
+}
+
+function sharedContextFile(file: ReviewContextFile): boolean {
+	return (
+		file.path === ".codekeat" ||
+		file.path.startsWith(".codekeat/") ||
+		file.path === "codekeat.yml" ||
+		/^(AGENTS|CLAUDE|README)\.md$/i.test(file.path)
 	);
 }
 

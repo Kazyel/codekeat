@@ -1,6 +1,7 @@
 import { createGoogle } from "@ai-sdk/google";
 import pino from "pino";
 import { describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 
 import type {
 	ReviewExecution,
@@ -38,7 +39,7 @@ const input: ReviewInput = {
 	repositoryContext: {
 		repositoryFullName: "takeat/example",
 		revision: "head",
-		files: [],
+		files: [{ kind: "loaded", path: "file.ts", content: "new" }],
 		omittedFileCount: 0,
 	},
 	title: "Update contract",
@@ -56,7 +57,27 @@ const providerUsage = {
 	thoughtsTokenCount: 2,
 };
 
+const conclusion = {
+	status: "complete",
+	reviewedPaths: ["file.ts"],
+	hypotheses: [
+		{
+			path: "file.ts",
+			line: 1,
+			scenario: "Valid caller input",
+			expectedBehavior: "Preserve contract",
+			observedBehavior: "Contract preserved",
+			outcome: "refuted",
+			evidence: [
+				{ path: "file.ts", role: "head", revision: "head", startLine: 1, endLine: 1 },
+			],
+			missingEvidence: [],
+		},
+	],
+};
 function response(output: string, withUsage = true): Response {
+	const value = z.record(z.string(), z.json()).parse(JSON.parse(output));
+	if ("findings" in value) output = JSON.stringify({ conclusion, ...value });
 	return Response.json({
 		candidates: [
 			{ content: { role: "model", parts: [{ text: output }] }, finishReason: "STOP" },
