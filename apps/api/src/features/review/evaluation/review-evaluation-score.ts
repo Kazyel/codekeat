@@ -26,6 +26,8 @@ export interface ReviewEvaluationScore {
 	readonly inputTokens: number;
 	readonly outputTokens: number;
 	readonly cacheTokens: number;
+	readonly reasoningTokens: number | null;
+	readonly knownReasoningSteps: number;
 }
 
 /** Human annotations, never provider judgments, determine precision and defect matching. */
@@ -53,6 +55,16 @@ export function scoreReviewEvaluation(
 	const usages = result.cases
 		.flatMap((entry) => [entry.reviewUsage, entry.judgeUsage])
 		.filter((entry) => entry !== null);
+	const reasoning = result.cases
+		.flatMap((entry) => entry.metrics)
+		.filter(
+			(metric) =>
+				metric.scope === "operation" &&
+				(metric.phase === "generation" || metric.phase === "judge") &&
+				metric.requestCount > 0 &&
+				metric.reasoningTokens !== null,
+		);
+
 	return {
 		knownDefects,
 		detectedDefects: detected.size,
@@ -78,6 +90,11 @@ export function scoreReviewEvaluation(
 		inputTokens: usages.reduce((sum, entry) => sum + entry.inputTokens, 0),
 		outputTokens: usages.reduce((sum, entry) => sum + entry.outputTokens, 0),
 		cacheTokens: usages.reduce((sum, entry) => sum + entry.cacheTokens, 0),
+		reasoningTokens:
+			reasoning.length === 0
+				? null
+				: reasoning.reduce((sum, metric) => sum + (metric.reasoningTokens ?? 0), 0),
+		knownReasoningSteps: reasoning.length,
 	};
 }
 function ratio(numerator: number, denominator: number): number | null {

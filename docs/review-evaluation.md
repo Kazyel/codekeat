@@ -110,9 +110,27 @@ Um corpus divergente, um label duplicado ou uma correspondência fora do interva
    metadata de uso. `knownUsageSteps` conta apenas etapas com recibo válido de tokens; ele pode ser
    menor que `requestCount`. Contagem de tokens e preflight não entram em `requestCount`.
    `measuredCases` é a população de p50/p95; casos `pending` ou `running` não entram nas durações.
+   `reasoningTokens` soma o raciocínio conhecido nas requisições de geração e julgamento.
+   `knownReasoningSteps` informa quantas requisições forneceram essa medida. Sem medidas conhecidas,
+   `reasoningTokens` é `null`; registros antigos não se convertem em zero. Quando houver medidas
+   parciais, a soma representa apenas as requisições conhecidas. Esses tokens já integram
+   `outputTokens` e o custo de saída, portanto não os some novamente ao calcular o total.
 5. Repita as rodadas mantendo a mesma política. Introduza uma melhoria por comparação.
 
 O código e a estratégia registrados vêm da execução real; o manifest não escolhe um nome de
 estratégia. Para estabelecer uma baseline de outra implementação, execute o harness nessa revisão
 com os mesmos snapshots. Preserve exemplos de módulos diferentes e uma parcela de casos que não
 orientou os ajustes do prompt. O par demonstrativo sozinho não comprova uma melhoria geral.
+
+Para comparar a estratégia `evidence-investigation-v9` com a baseline, mantenha também as mesmas
+configurações de admissão e o mesmo provider. Use outputs separados em cada rodada e os labels
+externos correspondentes aos findings daquela execução. Examine os pacotes iniciais por hunk,
+as lacunas de comparação anterior, o escopo das buscas e os candidatos escalados pelo juiz.
+Esses registros ajudam a explicar diferenças de custo e duração sem tratar menos chamadas como
+prova de qualidade. Precisão, recall e investigações incompletas continuam sendo medidas distintas.
+O resultado de uma rodada não estabelece ganho de latência ou qualidade para outros repositórios.
+
+Os [contratos de contexto da v9](effect.md#contratos-de-contexto-e-otimização-da-estratégia-v9)
+descrevem a coleta inicial, o julgamento focal, a preservação dos artefatos completos e a política
+de raciocínio. O corpus precisa incluir controles negativos e defeitos em contratos distintos
+para avaliar essas mudanças. Os labels humanos permanecem fora de todo contexto enviado ao agente.

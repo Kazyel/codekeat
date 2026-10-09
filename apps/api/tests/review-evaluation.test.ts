@@ -107,6 +107,8 @@ describe("isolated review evaluation", () => {
 			recall: 0,
 			unlabelledFindings: 1,
 			knownCostUsdMicros: 82.5,
+			reasoningTokens: null,
+			knownReasoningSteps: 0,
 		});
 		groundTruth.annotations.push({
 			runId: RUN,
@@ -126,7 +128,23 @@ describe("isolated review evaluation", () => {
 			const resultPath = join(directory, "results.json");
 			const labelsPath = join(directory, "labels.json");
 			const scorePath = join(directory, "score.json");
-			await writeFile(resultPath, JSON.stringify(result()));
+			const evaluated = result();
+			evaluated.cases[0]!.metrics.push(
+				createReviewMetric({
+					phase: "generation",
+					outcome: "success",
+					durationMs: 1,
+					requestCount: 1,
+					usage: {
+						inputTokens: 100,
+						cacheTokens: 100,
+						outputTokens: 20,
+						costUsdMicros: 82.5,
+					},
+					reasoningTokens: 12,
+				}),
+			);
+			await writeFile(resultPath, JSON.stringify(evaluated));
 			await writeFile(labelsPath, JSON.stringify(labels()));
 			const arguments_ = ["score", resultPath, labelsPath, scorePath];
 			await runReviewEvaluationCli(arguments_);
@@ -134,6 +152,8 @@ describe("isolated review evaluation", () => {
 				precision: null,
 				recall: 0,
 				unlabelledFindings: 1,
+				reasoningTokens: 12,
+				knownReasoningSteps: 1,
 			});
 			expect((await stat(scorePath)).mode & 0o777).toBe(0o600);
 			await expect(runReviewEvaluationCli(arguments_)).rejects.toThrow(/EEXIST/);

@@ -75,6 +75,10 @@ de fallback e acumula retries autorizados. Custos são arredondados ao persistir
 o snapshot de preços recuperam a precisão anterior. Ausência de metadata permanece desconhecida,
 sem conversão silenciosa para custo zero.
 
+`reasoningTokens` registra separadamente o uso de raciocínio informado pelo provider. Esses tokens
+já integram `outputTokens` e seu custo de saída; o cálculo não os soma novamente. A telemetria antiga
+sem essa informação conserva `null`, distinguindo uso desconhecido de zero confirmado.
+
 A correção de conclusões inválidas usa uma recuperação Effect limitada a uma continuação do histórico
 efetivo do SDK. Ela conserva o estado de evidências e os recibos, com duas rodadas de consulta e uma
 finalização. Não aplica `Effect.retry` à investigação inteira. O host revalida integralmente a saída
@@ -127,6 +131,52 @@ dez segundos devolve progresso parcial com continuação e interrompe o I/O. Pac
 compõem leituras independentes com `Effect.all` e conservam referências das fontes ainda pendentes.
 O avaliador isolado usa finalizadores e snapshots de resultados para registrar o uso já recebido
 também em cancelamento, sem publicar relatórios no GitHub.
+
+## Contratos de contexto e otimização da estratégia v9
+
+Antes da primeira inferência, `prepareReviewEvidence` reúne um pacote por hunk com `Effect.forEach`
+e concorrência quatro. O primeiro trecho adicionado fornece o ponto inicial; arquivos sem hunk
+identificável usam a primeira linha alterada conhecida. Todos os pontos são preservados.
+O código reutiliza as leituras com prazo e as páginas com continuação do catálogo, sem cortes
+silenciosos de conteúdo. Ler uma fonte no backend não equivale a entregá-la ao modelo: a validação
+aceita somente fontes inline efetivamente incluídas ou páginas entregues por ferramentas.
+
+A posição em `before` vem de uma linha removida ou de contexto de um hunk verificado. Ela identifica
+um ponto de leitura anterior, sem afirmar correspondência exata com uma linha adicionada.
+Quando o mapeamento não é seguro, `beforeLine` permanece `null` e o pacote registra a lacuna.
+Renames acrescentam `before_path_changed`; o caminho antigo continua disponível no catálogo para
+consulta dirigida. Símbolos para busca vêm somente de funções reconhecidas no contexto inline da
+revisão correta. Documentos e JSON não disparam essas buscas.
+
+Os prompts ordenam documentos compartilhados por caminho e os colocam antes dos dados variáveis do
+PR. Cada pacote conserva a revisão exata dos documentos. Essa ordem permite reutilizar o prefixo
+quando seus bytes permanecem iguais; o provider determina o cache efetivamente utilizado.
+A descrição integral, os diffs e as fontes pertinentes continuam no pacote ou em artefatos
+recuperáveis quando o transporte exige referências.
+
+O juiz começa com uma chamada sobre candidatos, hunks, hipóteses e evidências pertinentes. O lote
+original completo permanece em um artefato privado. `needs_evidence` registra lacunas e encaminha
+somente os índices pendentes para a investigação ampliada com ferramentas. Fontes indisponíveis
+também exigem essa investigação antes de uma decisão final.
+
+A política reduz raciocínio apenas na verificação focal e na navegação explicitamente solicitada
+por um checkpoint aceito, restrita a `source_read`, `source_list` e `source_related`.
+Investigação inicial, buscas, refutação, escalada e decisão final preservam `high` ou o orçamento
+dinâmico quando compatíveis com o modelo. Gemini 3 com suporte a `medium` usa esse nível nas etapas
+reduzidas; as variantes com outras opções seguem a configuração em `reviewReasoningOptions`.
+Modelos não reconhecidos não recebem opções de raciocínio específicas inventadas.
+
+Buscas por símbolos começam no escopo local e podem ampliar o prefixo progressivamente. O resultado
+expõe o escopo efetivamente pesquisado e suas continuações. Um resultado completo no escopo local
+não comprova ausência de consumidores fora dele. O índice de trigramas elimina arquivos que não
+podem conter a consulta; candidatos do índice ainda passam pelo scanner literal original, que
+produz as posições exatas. Os caches pertencem ao catálogo autorizado da execução. O cache de
+documentos retém no máximo 64 entradas; artefatos congelados continuam recuperáveis após a expulsão.
+
+Essas políticas mantêm os validadores de revisão, evidência e correspondência entre candidatos e
+findings. Checkpoints devolvem `requiredFindings`; registrar `complete` não publica um finding.
+Ganhos de tempo, custo ou qualidade exigem comparação com o mesmo corpus congelado e labels
+humanos externos, conforme [o procedimento de avaliação](review-evaluation.md).
 
 Referências: [Semaphore](https://effect.website/docs/v4/concurrency/semaphore),
 [TestClock](https://effect.website/docs/v4/testing/testclock),
