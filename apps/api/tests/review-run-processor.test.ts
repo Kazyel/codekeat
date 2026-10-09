@@ -365,7 +365,7 @@ describe("ReviewRunProcessorService", () => {
 			judgeCallCount: 1,
 			reviewChunkCount: 2,
 			changedLineCount: 1,
-			reviewStrategyVersion: "evidence-investigation-v8",
+			reviewStrategyVersion: "evidence-investigation-v9",
 		});
 		database.close();
 	});
@@ -429,7 +429,7 @@ describe("ReviewRunProcessorService", () => {
 		expect(readRun(database)).toMatchObject({
 			status: "completed",
 			judgeCallCount: 1,
-			reviewStrategyVersion: "evidence-investigation-v8",
+			reviewStrategyVersion: "evidence-investigation-v9",
 		});
 		database.close();
 	});

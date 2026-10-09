@@ -29,6 +29,8 @@ type CheckpointResult =
 	| {
 			readonly status: ReviewConclusion["status"];
 			readonly pendingTools: readonly z.infer<typeof nextTool>[];
+			readonly requiredFindings: readonly { readonly path: string; readonly line: number }[];
+			readonly completionRequirement: string;
 	  }
 	| {
 			readonly status: "correction_required";
@@ -49,7 +51,7 @@ export class ReviewInvestigationState {
 		return {
 			investigation_checkpoint: tool({
 				description:
-					"Record concrete scenarios, sources and unresolved evidence gaps. Use nextTools for the next retrieval step. Complete means all reportable files and relevant boundary scenarios were checked; coverage alone is not proof of correctness. Inline sources can supply evidence without extra reads.",
+					"Record concrete scenarios, sources and unresolved evidence gaps. Use nextTools for the next retrieval step. Complete means all reportable files and relevant boundary scenarios were checked; coverage alone is not proof of correctness. Inline sources can supply evidence without extra reads. This checkpoint does not publish findings: its requiredFindings must appear with matching path and line in the final response if the candidate remains supported.",
 				inputSchema: z
 					.object({ conclusion: reviewConclusionSchema, nextTools: z.array(nextTool) })
 					.strict(),
@@ -62,6 +64,10 @@ export class ReviewInvestigationState {
 	reopen(): void {
 		this.current = null;
 		this.requestedTools = [];
+	}
+
+	navigationTools(): readonly string[] {
+		return this.current?.status === "incomplete" ? this.requestedTools : [];
 	}
 
 	private checkpoint(
@@ -78,7 +84,15 @@ export class ReviewInvestigationState {
 		}
 		this.current = conclusion;
 		this.requestedTools = nextTools;
-		return { status: conclusion.status, pendingTools: nextTools };
+		return {
+			status: conclusion.status,
+			pendingTools: nextTools,
+			requiredFindings: conclusion.hypotheses
+				.filter((hypothesis) => hypothesis.outcome === "candidate")
+				.map(({ path, line }) => ({ path, line })),
+			completionRequirement:
+				"Return the full final response. Each supported candidate requires a finding at the same path and line. If a candidate is refuted, update its outcome and cite the decisive delivered evidence; complete alone does not publish a finding.",
+		};
 	}
 
 	activeTools(available: readonly string[]): readonly string[] {

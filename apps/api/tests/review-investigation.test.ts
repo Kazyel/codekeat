@@ -232,6 +232,13 @@ describe("evidence-driven investigation through the AI SDK", () => {
 			],
 			gaps: ["Read validator"],
 		};
+		const supported: ReviewConclusion = {
+			...conclusion,
+			hypotheses: conclusion.hypotheses.map((hypothesis) => ({
+				...hypothesis,
+				outcome: "candidate",
+			})),
+		};
 		const h = harness([
 			call("investigation_checkpoint", {
 				conclusion: incomplete,
@@ -241,8 +248,8 @@ describe("evidence-driven investigation through the AI SDK", () => {
 				source: { role: "head", path },
 				range: { kind: "lines", startLine: 1, lineCount: 4 },
 			}),
-			call("investigation_checkpoint", { conclusion, nextTools: [] }),
-			response({ findings: [], conclusion }),
+			call("investigation_checkpoint", { conclusion: supported, nextTools: [] }),
+			response({ findings: [finding], conclusion: supported }),
 		]);
 		const sources: ReviewSourceCatalog = {
 			revisions: [
@@ -279,12 +286,13 @@ describe("evidence-driven investigation through the AI SDK", () => {
 				throw new Error("No transcript archival needed");
 			},
 		};
-		await h.service.review(model, input, ordinary, {
+		const result = await h.service.review(model, input, ordinary, {
 			signal: new AbortController().signal,
 			sources,
 			recordUsage: () => {},
 			recordMetric: () => {},
 		});
+		expect(result.findings).toEqual([finding]);
 		const requestSchema = z.object({
 			tools: z
 				.array(z.object({ functionDeclarations: z.array(z.object({ name: z.string() })) }))
@@ -299,6 +307,31 @@ describe("evidence-driven investigation through the AI SDK", () => {
 		expect(selected).toContain("source_read");
 		expect(selected).not.toContain("source_evidence");
 		expect(requestSchema.parse(h.requests[3]).tools).toBeUndefined();
+		const final = z
+			.object({ contents: z.array(z.object({ parts: z.array(z.json()) })) })
+			.parse(h.requests[3]);
+		const requirements = final.contents
+			.flatMap((content) => content.parts)
+			.flatMap((part) => {
+				const checkpoint = z
+					.object({
+						functionResponse: z.object({
+							response: z.object({
+								content: z.object({
+									status: z.literal("complete"),
+									requiredFindings: z.array(
+										z.object({ path: z.string(), line: z.number() }),
+									),
+								}),
+							}),
+						}),
+					})
+					.safeParse(part);
+				return checkpoint.success
+					? checkpoint.data.functionResponse.response.content.requiredFindings
+					: [];
+			});
+		expect(requirements).toEqual([{ path, line: finding.line }]);
 	});
 	it.each(["review", "judge"] as const)(
 		"archives old large %s retrieval payloads without losing tool pairs, original content or continuations",
