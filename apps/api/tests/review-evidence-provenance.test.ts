@@ -230,6 +230,78 @@ describe("review evidence provenance through Google transport", () => {
 		expect(rejected[0]).toContain("merge-base");
 	});
 
+	it("preserves a direct reference to original tool output across response repair", async () => {
+		const path = "src/" + "long_changed_source_name_".repeat(20) + ".ts";
+		const changed: ReviewInputChunk = {
+			...CHUNK,
+			changedLines: new Map([[path, new Set([2])]]),
+			diff: CHUNK.diff.replaceAll(PATH, path),
+		};
+		const input: ReviewInput = { ...WITHOUT_INLINE, chunks: [changed] };
+		const document: ReviewSourceDocument = {
+			source: {
+				role: "head",
+				path,
+				revision: INPUT.headSha,
+				repositoryFullName: INPUT.repositoryFullName,
+				contentHash: "git:" + "a".repeat(40),
+			},
+			content: "// original-source " + "x".repeat(2900) + "\nreturn 1;\n",
+		};
+		const archived: { tool: string; response: string }[] = [];
+		const sources: ReviewSourceCatalog = {
+			...catalog(),
+			read: async ({ range }) => readReviewSourceRange(document, range),
+			recordInvestigation: async (tool, _arguments, response) => {
+				archived.push({ tool, response });
+				return {
+					role: "investigation",
+					path: "mcp/" + "b".repeat(64),
+					revision: "unconfirmed",
+					repositoryFullName: INPUT.repositoryFullName,
+					contentHash: "sha256:" + "b".repeat(64),
+				};
+			},
+		};
+		const valid: ReviewConclusion = {
+			...conclusion({ ...HEAD, path }),
+			reviewedPaths: [path],
+			hypotheses: conclusion({ ...HEAD, path }).hypotheses.map((entry) => ({
+				...entry,
+				path,
+			})),
+		};
+		const invalid: ReviewConclusion = {
+			...valid,
+			hypotheses: valid.hypotheses.map((entry) => ({
+				...entry,
+				evidence: [{ ...HEAD, path, revision: "invented" }],
+			})),
+		};
+		const list = () =>
+			call("source_list", { role: "head", prefix: "", cursor: null, limit: 10 });
+		const { model, requests } = harness([
+			call("source_read", {
+				source: { role: "head", path },
+				range: { kind: "lines", startLine: 1, lineCount: 3 },
+			}),
+			list(),
+			list(),
+			list(),
+			output(invalid),
+			output(valid),
+		]);
+		await expect(
+			model.review(MODEL, input, changed, execution(sources)),
+		).resolves.toMatchObject({ findings: [], investigation: { kind: "verified" } });
+		expect(requests).toHaveLength(6);
+		const originals = archived.filter((entry) => entry.tool === "review_transcript");
+		expect(originals).toHaveLength(1);
+		expect(originals[0]?.response).toContain("original-source");
+		expect(requests[5]).toContain("archived_tool_result");
+		expect(requests[5]).not.toContain("original-source");
+	});
+
 	it("accepts supplied inline sources and sends an associated candidate to the caller", async () => {
 		const { model } = harness([output(conclusion(HEAD, "candidate"), [FINDING])]);
 		await expect(model.review(MODEL, INPUT, CHUNK)).resolves.toMatchObject({

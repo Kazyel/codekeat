@@ -24,8 +24,6 @@ const retrievalState = z.object({
 
 /** Replaces old transport payloads with exact, recoverable originals while preserving call/result pairs. */
 export class ReviewTranscript {
-	private readonly archived = new Map<string, ReviewSourceReference>();
-
 	constructor(
 		private readonly sources: ReviewSourceCatalog | null,
 		private readonly signal: AbortSignal,
@@ -59,9 +57,9 @@ export class ReviewTranscript {
 		const sources = this.sources;
 		if (sources === null) return Effect.succeed(part);
 		if (part.output.type !== "json") return Effect.succeed(part);
-		if (this.archived.has(part.toolCallId)) return Effect.succeed(part);
 		const state = retrievalState.safeParse(part.output.value);
 		const retained = state.success ? state.data : {};
+		if (retained.kind === "archived_tool_result") return Effect.succeed(part);
 		const original = JSON.stringify(part.output);
 		return Effect.tryPromise({
 			try: async (): Promise<ToolResultPart> => {
@@ -88,7 +86,6 @@ export class ReviewTranscript {
 				);
 				const archived = archivedResult(part, source, retained);
 				if (original.length <= JSON.stringify(archived.output).length) return part;
-				this.archived.set(part.toolCallId, source);
 				return archived;
 			},
 			catch: () => new Error("Could not preserve the investigation transcript."),
