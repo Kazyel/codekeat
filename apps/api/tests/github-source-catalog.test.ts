@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout } from "node:timers/promises";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
 	createGitHubSourceCatalog,
@@ -297,6 +297,48 @@ describe("GitHub source catalog", () => {
 			content: snapshot.body,
 		});
 	});
+
+	it.each([
+		{ phase: "snapshot commit", lookup: (git: GitFixture) => vi.spyOn(git, "getCommit") },
+		{ phase: "Git tree", lookup: (git: GitFixture) => vi.spyOn(git, "getTree") },
+		{ phase: "blob", lookup: (git: GitFixture) => vi.spyOn(git, "getBlob") },
+	])(
+		"recovers a transient $phase failure in the same authorized run and shares the retry",
+		async ({ lookup }) => {
+			const file = { path: "src/file.ts", content: "Recovered exact source\r\n" };
+			const git = new GitFixture([file]);
+			const attempts = lookup(git).mockRejectedValueOnce(
+				new Error("Temporary GitHub failure"),
+			);
+			const catalog = await createGitHubSourceCatalog(
+				git,
+				new ComparisonFixture(),
+				snapshot,
+				await artifactDirectory(),
+				signal,
+			);
+			const request = readRequest("head", file.path);
+
+			expect(await catalog.read(request, signal)).toEqual({
+				kind: "unavailable",
+				reason: "request_failed",
+				source: request.source,
+			});
+			const [first, second] = await Promise.all([
+				catalog.read(request, signal),
+				catalog.read(request, signal),
+			]);
+			expect(first).toMatchObject({
+				kind: "loaded",
+				content: file.content,
+				source: { role: "head", repositoryFullName: "contributor/api", revision: HEAD },
+			});
+			expect(second).toEqual(first);
+			expect(attempts).toHaveBeenCalledTimes(2);
+			expect(await catalog.read(request, signal)).toEqual(first);
+			expect(attempts).toHaveBeenCalledTimes(2);
+		},
+	);
 
 	it("bounds each catalog to four active blob requests and sixteen across concurrent catalogs", async () => {
 		const files = Array.from({ length: 8 }, (_, index) => ({

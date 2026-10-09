@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { posix } from "node:path";
-import { Cache, Effect, Semaphore } from "effect";
+import { Cache, Duration, Effect, Exit, Semaphore } from "effect";
 import { z } from "zod";
 
 import {
@@ -155,21 +155,21 @@ class GitHubSourceBackend implements ReviewSourceBackend {
 		this.targets = new Map(targets.map((target) => [target.role, target]));
 		// Caches are owned by one authorized run; completed file lookups retain only disk references.
 		this.snapshots = Effect.runSync(
-			Cache.make({
+			Cache.makeWith((role: RepositoryRole) => this.snapshot(role), {
 				capacity: Number.MAX_SAFE_INTEGER,
-				lookup: (role: RepositoryRole) => this.snapshot(role),
+				timeToLive: successfulSourceLifetime,
 			}),
 		);
 		this.trees = Effect.runSync(
-			Cache.make({
+			Cache.makeWith((key: string) => this.tree(key), {
 				capacity: Number.MAX_SAFE_INTEGER,
-				lookup: (key: string) => this.tree(key),
+				timeToLive: successfulSourceLifetime,
 			}),
 		);
 		this.files = Effect.runSync(
-			Cache.make({
+			Cache.makeWith((key: string) => this.file(key), {
 				capacity: Number.MAX_SAFE_INTEGER,
-				lookup: (key: string) => this.file(key),
+				timeToLive: successfulSourceLifetime,
 			}),
 		);
 	}
@@ -346,6 +346,11 @@ class GitHubSourceBackend implements ReviewSourceBackend {
 			),
 		);
 	}
+}
+
+/** A frozen snapshot stays reusable; a failed lookup must permit a fresh attempt in this run. */
+function successfulSourceLifetime<A, E>(exit: Exit.Exit<A, E>): Duration.Duration {
+	return Exit.isSuccess(exit) ? Duration.infinity : Duration.zero;
 }
 
 function snapshotTree(target: Target, entries: readonly TreeEntry[]): SnapshotTree {
