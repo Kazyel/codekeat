@@ -6,16 +6,19 @@ import {
 	type DatabaseConnection,
 } from "@codekeat/database";
 import { and, eq, sql } from "drizzle-orm";
+import { z } from "zod";
 import { currentTimestamp } from "#shared/database";
 
 import type {
 	ExistingReviewRun,
 	ReviewRunCompletion,
 	ReviewRunErrorCode,
+	ReviewRunFailureStatistics,
 	ReviewRunInput,
 	RunnableReviewRun,
 } from "../types/review-repository.types.js";
 import type { ReviewRunIgnoreReason, ReviewTrigger } from "../types/review-run.types.js";
+import type { ReviewTokenUsage } from "../types/review-input.types.js";
 import { ReviewReportRepository } from "./review-report.repository.js";
 
 export class ReviewRunRepository {
@@ -86,11 +89,11 @@ export class ReviewRunRepository {
 				status: "queued",
 				errorCode: null,
 				ignoreReason: null,
-				inputTokens: null,
-				outputTokens: null,
-				cacheTokens: null,
-				costUsdMicros: null,
 				startedAt: null,
+				reviewStrategyVersion: null,
+				changedLineCount: null,
+				reviewChunkCount: null,
+				processingDurationMs: null,
 				completedAt: null,
 				updatedAt: currentTimestamp(),
 			})
@@ -103,6 +106,37 @@ export class ReviewRunRepository {
 			.run();
 
 		return result.changes > 0;
+	}
+
+	readReviewRunUsage(reviewRunId: string): ReviewRunFailureStatistics {
+		const row = this.connection.db
+			.select({
+				inputTokens: reviewRuns.inputTokens,
+				outputTokens: reviewRuns.outputTokens,
+				cacheTokens: reviewRuns.cacheTokens,
+				costUsdMicros: reviewRuns.costUsdMicros,
+				judgeInputTokens: reviewRuns.judgeInputTokens,
+				judgeOutputTokens: reviewRuns.judgeOutputTokens,
+				judgeCacheTokens: reviewRuns.judgeCacheTokens,
+				judgeCostUsdMicros: reviewRuns.judgeCostUsdMicros,
+				judgeCallCount: reviewRuns.judgeCallCount,
+				processingDurationMs: reviewRuns.processingDurationMs,
+			})
+			.from(reviewRuns)
+			.where(eq(reviewRuns.id, reviewRunId))
+			.get();
+		if (row === undefined) throw new Error("Review run usage is missing.");
+		return {
+			reviewUsage: readPersistedUsage(row),
+			judgeUsage: readPersistedUsage({
+				inputTokens: row.judgeInputTokens,
+				outputTokens: row.judgeOutputTokens,
+				cacheTokens: row.judgeCacheTokens,
+				costUsdMicros: row.judgeCostUsdMicros,
+			}),
+			judgeCallCount: row.judgeCallCount ?? 0,
+			processingDurationMs: row.processingDurationMs ?? 0,
+		};
 	}
 
 	claimQueuedReviewRun(reviewRunId: string): RunnableReviewRun | null {
@@ -229,11 +263,21 @@ export class ReviewRunRepository {
 		});
 	}
 
-	failReviewRun(reviewRunId: string, errorCode: ReviewRunErrorCode): void {
+	failReviewRun(
+		reviewRunId: string,
+		errorCode: ReviewRunErrorCode,
+		statistics: ReviewRunFailureStatistics | null = null,
+	): void {
 		const now = currentTimestamp();
 		this.connection.db
 			.update(reviewRuns)
-			.set({ status: "failed", errorCode, completedAt: now, updatedAt: now })
+			.set({
+				status: "failed",
+				errorCode,
+				completedAt: now,
+				updatedAt: now,
+				...(statistics === null ? {} : failureUsageColumns(statistics)),
+			})
 			.where(eq(reviewRuns.id, reviewRunId))
 			.run();
 	}
@@ -246,6 +290,56 @@ export class ReviewRunRepository {
 			.where(eq(reviewRuns.id, reviewRunId))
 			.run();
 	}
+}
+
+const TOKEN_USAGE_SCHEMA = z
+	.object({
+		inputTokens: z.number().int().nonnegative(),
+		outputTokens: z.number().int().nonnegative(),
+		cacheTokens: z.number().int().nonnegative(),
+		costUsdMicros: z.number().int().nonnegative(),
+	})
+	.refine((usage) => usage.cacheTokens <= usage.inputTokens);
+
+function readPersistedUsage(usage: {
+	readonly [Key in keyof ReviewTokenUsage]: number | null;
+}): ReviewTokenUsage | null {
+	if (Object.values(usage).every((value) => value === null)) return null;
+	return TOKEN_USAGE_SCHEMA.parse(usage);
+}
+
+const UNKNOWN_USAGE = {
+	inputTokens: null,
+	outputTokens: null,
+	cacheTokens: null,
+	costUsdMicros: null,
+};
+type FailureUsageColumns = Pick<
+	typeof reviewRuns.$inferInsert,
+	| "inputTokens"
+	| "outputTokens"
+	| "cacheTokens"
+	| "costUsdMicros"
+	| "judgeInputTokens"
+	| "judgeOutputTokens"
+	| "judgeCacheTokens"
+	| "judgeCostUsdMicros"
+	| "judgeCallCount"
+	| "processingDurationMs"
+>;
+
+function failureUsageColumns(statistics: ReviewRunFailureStatistics): FailureUsageColumns {
+	const review = statistics.reviewUsage ?? UNKNOWN_USAGE;
+	const judge = statistics.judgeUsage ?? UNKNOWN_USAGE;
+	return {
+		...review,
+		judgeInputTokens: judge.inputTokens,
+		judgeOutputTokens: judge.outputTokens,
+		judgeCacheTokens: judge.cacheTokens,
+		judgeCostUsdMicros: judge.costUsdMicros,
+		judgeCallCount: statistics.judgeCallCount,
+		processingDurationMs: statistics.processingDurationMs,
+	};
 }
 
 function requireSnapshotValue<Value>(value: Value | null): Value {

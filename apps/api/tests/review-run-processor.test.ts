@@ -1,4 +1,4 @@
-import { findings, reviewRuns } from "@codekeat/database";
+import { findings, reviewReports, reviewRuns } from "@codekeat/database";
 import pino, { type Logger } from "pino";
 import { describe, expect, it, vi } from "vitest";
 import type { ReviewModelConfiguration } from "#features/models";
@@ -9,11 +9,13 @@ import {
 	type ReviewFindingJudge,
 	type ReviewFindingJudgeInput,
 	type ReviewFindingJudgmentResult,
+	type ReviewExecution,
 	type ReviewInput,
 	type ReviewInputLoadResult,
 	type ReviewInputSource,
 	type ReviewModel,
 	ReviewModelResponseError,
+	ReviewContextCapacityExceeded,
 	type ReviewModelResult,
 	ReviewRunProcessorService,
 	type ReviewWorkQueue,
@@ -28,13 +30,13 @@ const REVIEW_USAGE = {
 	inputTokens: 100,
 	outputTokens: 20,
 	cacheTokens: 10,
-	costUsdMicros: 10.25,
+	costUsdMicros: 10.5,
 };
 const JUDGE_USAGE = {
 	inputTokens: 25,
 	outputTokens: 5,
 	cacheTokens: 2,
-	costUsdMicros: 3.4,
+	costUsdMicros: 2.65,
 };
 
 class ReadyInputSource implements ReviewInputSource {
@@ -64,9 +66,16 @@ class RecordedModel implements ReviewModel {
 		model: ReviewModelConfiguration,
 		_: ReviewInput,
 		chunk: ReviewInput["chunks"][number],
+		execution?: ReviewExecution,
 	): Promise<ReviewModelResult> {
 		this.modelNames.push(model.apiName);
 		this.chunkIndexes.push(chunk.index);
+		execution?.recordUsage({
+			stage: "review",
+			callId: `review-${chunk.index}`,
+			stepNumber: 0,
+			usage: REVIEW_USAGE,
+		});
 		return {
 			findings: this.responses[chunk.index - 1] ?? [],
 			investigation: {
@@ -108,9 +117,17 @@ class RecordedJudge implements ReviewFindingJudge {
 		_: ReviewModelConfiguration,
 		__: ReviewInput,
 		batch: ReviewFindingJudgeInput,
+		execution?: ReviewExecution,
 	): Promise<ReviewFindingJudgmentResult> {
 		this.batches.push(batch);
-		return this.decide(batch);
+		const result = await this.decide(batch);
+		execution?.recordUsage({
+			stage: "judge",
+			callId: `judge-${this.batches.length}`,
+			stepNumber: 0,
+			usage: result.usage,
+		});
+		return result;
 	}
 }
 
@@ -165,7 +182,7 @@ describe("ReviewRunProcessorService", () => {
 			judgeCallCount: 1,
 			reviewChunkCount: 2,
 			changedLineCount: 1,
-			reviewStrategyVersion: "repository-context-v4",
+			reviewStrategyVersion: "repository-context-v5",
 		});
 		database.close();
 	});
@@ -229,7 +246,7 @@ describe("ReviewRunProcessorService", () => {
 		expect(readRun(database)).toMatchObject({
 			status: "completed",
 			judgeCallCount: 1,
-			reviewStrategyVersion: "repository-context-v4",
+			reviewStrategyVersion: "repository-context-v5",
 		});
 		database.close();
 	});
@@ -264,7 +281,7 @@ describe("ReviewRunProcessorService", () => {
 			judgeInputTokens: 50,
 			judgeOutputTokens: 10,
 			judgeCacheTokens: 4,
-			judgeCostUsdMicros: 7,
+			judgeCostUsdMicros: 5,
 		});
 		database.close();
 	});
@@ -286,6 +303,125 @@ describe("ReviewRunProcessorService", () => {
 		database.close();
 	});
 
+	it("splits an oversized judge packet into complete candidates and keeps original findings", async () => {
+		const database = createReviewRun();
+		const titles = ["First failure", "Second failure", "Third failure"];
+		const batchSizes: number[] = [];
+		const judge: ReviewFindingJudge = {
+			async judge(_model, _input, batch, execution) {
+				batchSizes.push(batch.candidates.length);
+				if (batch.candidates.length > 1) {
+					throw new ReviewContextCapacityExceeded({
+						inputTokens: 1_001,
+						inputTokenLimit: 1_000,
+					});
+				}
+				execution.recordUsage({
+					stage: "judge",
+					callId: `judge-${batchSizes.length}`,
+					stepNumber: 0,
+					usage: JUDGE_USAGE,
+				});
+				return approveAll(batch);
+			},
+		};
+		const processor = createProcessor(
+			database,
+			new ReadyInputSource(ONE_CHUNK_INPUT),
+			new RecordedModel([titles.map((title) => ({ ...VALID_FINDING, title }))]),
+			judge,
+		);
+		await processor.process(REVIEW_RUN_ID);
+		expect(batchSizes).toEqual([3, 2, 1, 1, 1]);
+		expect(
+			database.connection.db
+				.select()
+				.from(findings)
+				.all()
+				.map((finding) => finding.title),
+		).toEqual(titles);
+		expect(readRun(database)).toMatchObject({
+			status: "completed",
+			judgeCallCount: 3,
+			judgeInputTokens: 75,
+			judgeCostUsdMicros: 8,
+		});
+		database.close();
+	});
+
+	it("fails explicitly when an indivisible context exceeds the model capacity", async () => {
+		const database = createReviewRun();
+		const model: ReviewModel = {
+			async review() {
+				throw new ReviewContextCapacityExceeded({
+					inputTokens: 1_001,
+					inputTokenLimit: 1_000,
+				});
+			},
+		};
+		await createProcessor(
+			database,
+			new ReadyInputSource(ONE_CHUNK_INPUT),
+			model,
+			new RecordedJudge(),
+		).process(REVIEW_RUN_ID);
+		expect(readRun(database)).toMatchObject({
+			status: "failed",
+			errorCode: "review_context_capacity_exceeded",
+			inputTokens: null,
+			costUsdMicros: null,
+		});
+		expect(database.connection.db.select().from(reviewReports).all()).toEqual([]);
+		database.close();
+	});
+
+	it("aborts a stalled run at its deadline and persists charged usage exactly once", async () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		const database = createReviewRun();
+		let requestSignal: AbortSignal | undefined;
+		const model: ReviewModel = {
+			async review(_model, _input, _chunk, execution) {
+				requestSignal = execution.signal;
+				const usage = {
+					stage: "review",
+					callId: "charged-call",
+					stepNumber: 0,
+					usage: REVIEW_USAGE,
+				} as const;
+				execution.recordUsage(usage);
+				execution.recordUsage(usage);
+				return new Promise<never>((_resolve, reject) =>
+					execution.signal.addEventListener("abort", () => reject(new Error("aborted")), {
+						once: true,
+					}),
+				);
+			},
+		};
+		try {
+			const processing = createProcessor(
+				database,
+				new ReadyInputSource(ONE_CHUNK_INPUT),
+				model,
+				new RecordedJudge(),
+			).process(REVIEW_RUN_ID);
+			await vi.waitFor(() => expect(requestSignal).toBeDefined());
+			await vi.advanceTimersByTimeAsync(30 * 60 * 1_000 + 1);
+			await processing;
+			expect(requestSignal?.aborted).toBe(true);
+			expect(readRun(database)).toMatchObject({
+				status: "failed",
+				errorCode: "review_run_timeout",
+				inputTokens: 100,
+				costUsdMicros: 11,
+				judgeInputTokens: null,
+			});
+			expect(database.connection.db.select().from(reviewReports).all()).toEqual([]);
+		} finally {
+			vi.useRealTimers();
+			database.close();
+		}
+	});
+
 	it("fails closed when the judge response does not cover every candidate", async () => {
 		const database = createReviewRun();
 		const judge = new RecordedJudge(() => ({ judgments: [], usage: JUDGE_USAGE }));
@@ -304,6 +440,10 @@ describe("ReviewRunProcessorService", () => {
 		expect(readRun(database)).toMatchObject({
 			status: "failed",
 			errorCode: "gemini_judge_invalid_response",
+			inputTokens: 100,
+			costUsdMicros: 11,
+			judgeInputTokens: 25,
+			judgeCostUsdMicros: 3,
 		});
 		expect(database.connection.db.select().from(findings).all()).toEqual([]);
 		expect(warn).toHaveBeenCalledWith(
@@ -334,8 +474,49 @@ describe("ReviewRunProcessorService", () => {
 		expect(readRun(database)).toMatchObject({
 			status: "failed",
 			errorCode: "gemini_judge_request_failed",
+			inputTokens: 100,
+			costUsdMicros: 11,
+			judgeInputTokens: null,
+			judgeCostUsdMicros: null,
 		});
 		expect(database.connection.db.select().from(findings).all()).toEqual([]);
+		database.close();
+	});
+
+	it("retains charged usage across failed attempts and an authorized retry", async () => {
+		const database = createReviewRun();
+		await createProcessor(
+			database,
+			new ReadyInputSource(ONE_CHUNK_INPUT),
+			new RecordedModel([[VALID_FINDING]]),
+			new RecordedJudge(() => ({ judgments: [], usage: JUDGE_USAGE })),
+		).process(REVIEW_RUN_ID);
+		expect(readRun(database)).toMatchObject({
+			status: "failed",
+			inputTokens: 100,
+			judgeInputTokens: 25,
+		});
+		expect(database.reviewRunRepository.requeueReviewRun(REVIEW_RUN_ID, "command")).toBe(true);
+		expect(readRun(database)).toMatchObject({
+			status: "queued",
+			inputTokens: 100,
+			judgeInputTokens: 25,
+		});
+		await createProcessor(
+			database,
+			new ReadyInputSource(ONE_CHUNK_INPUT),
+			new RecordedModel([[VALID_FINDING]]),
+			new RecordedJudge(),
+		).process(REVIEW_RUN_ID);
+		expect(readRun(database)).toMatchObject({
+			status: "completed",
+			inputTokens: 200,
+			costUsdMicros: 21,
+			judgeInputTokens: 50,
+			judgeCostUsdMicros: 5,
+			judgeCallCount: 2,
+		});
+		expect(database.connection.db.select().from(reviewReports).all()).toHaveLength(1);
 		database.close();
 	});
 
@@ -426,6 +607,8 @@ describe("ReviewRunProcessorService", () => {
 		expect(readRun(database)).toMatchObject({
 			status: "failed",
 			errorCode: "finding_location_invalid",
+			inputTokens: 200,
+			costUsdMicros: 21,
 		});
 		expect(database.connection.db.select().from(findings).all()).toEqual([]);
 		expect(model.chunkIndexes).toEqual([1, 2]);
@@ -529,7 +712,12 @@ function createReviewRun() {
 		policySource: "default",
 		policyWarningCode: null,
 		ignoreReason: null,
-		model: database.selectedModel,
+		model: {
+			...database.selectedModel,
+			inputNanoUsdPerToken: 100,
+			cachedInputNanoUsdPerToken: 50,
+			outputNanoUsdPerToken: 50,
+		},
 	});
 	return database;
 }
