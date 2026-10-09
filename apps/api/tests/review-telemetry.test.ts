@@ -29,6 +29,7 @@ describe("review telemetry", () => {
 					durationMs: 120,
 					outcome: "failed",
 					callId: "call-provider_1",
+					reasoningTokens: 1,
 					usage: {
 						inputTokens: 10,
 						outputTokens: 2,
@@ -46,6 +47,7 @@ describe("review telemetry", () => {
 					expect.objectContaining({
 						phase: "generation",
 						outcome: "failed",
+						reasoningTokens: 1,
 						usage: {
 							inputTokens: 10,
 							outputTokens: 2,
@@ -53,7 +55,12 @@ describe("review telemetry", () => {
 							costUsdMicros: 0.125,
 						},
 					}),
-					expect.objectContaining({ phase: "judge", outcome: "cancelled", usage: null }),
+					expect.objectContaining({
+						phase: "judge",
+						outcome: "cancelled",
+						usage: null,
+						reasoningTokens: null,
+					}),
 				]),
 			);
 			expect(() =>
@@ -92,15 +99,15 @@ describe("review telemetry", () => {
 						outcome: "success",
 						sourceBytes: 65_536,
 						requestCount: 1,
-						usage:
-							durationMs === 10
-								? {
-										inputTokens: 10,
-										outputTokens: 2,
-										cacheTokens: 4,
-										costUsdMicros: 0.125,
-									}
-								: null,
+						reasoningTokens: durationMs === 10 ? 1 : null,
+						usage: [10, 20].includes(durationMs)
+							? {
+									inputTokens: 10,
+									outputTokens: 2,
+									cacheTokens: 4,
+									costUsdMicros: 0.125,
+								}
+							: null,
 					}),
 				);
 			repository.record(
@@ -165,12 +172,14 @@ describe("review telemetry", () => {
 						p50DurationMs: 30,
 						p95DurationMs: 1_000,
 						requestCount: 5,
-						knownUsageCount: 1,
+						knownUsageCount: 2,
+						knownReasoningCount: 1,
+						reasoningTokens: 1,
 						usage: {
-							inputTokens: 10,
-							outputTokens: 2,
-							cacheTokens: 4,
-							costUsdMicros: 0.125,
+							inputTokens: 20,
+							outputTokens: 4,
+							cacheTokens: 8,
+							costUsdMicros: 0.25,
 						},
 					}),
 					expect.objectContaining({
@@ -179,6 +188,8 @@ describe("review telemetry", () => {
 						sizeBand: "small",
 						sampleCount: 1,
 						p95DurationMs: 2_000,
+						knownReasoningCount: 0,
+						reasoningTokens: null,
 					}),
 					expect.objectContaining({
 						phase: "count",
@@ -232,11 +243,18 @@ describe("review telemetry", () => {
 			expect((await fetch(`${base}/${randomUUID()}`, { headers })).status).toBe(404);
 			expect((await fetch(`${base}/invalid`, { headers })).status).toBe(404);
 			expect(await (await fetch(`${base}/${runId}`, { headers })).json()).toMatchObject({
-				events: [{ phase: "queue", durationMs: 12 }],
+				events: [{ phase: "queue", durationMs: 12, reasoningTokens: null }],
 			});
 			expect(await (await fetch(base, { headers })).json()).toMatchObject({
 				days: 30,
-				summaries: [{ phase: "queue", sampleCount: 1 }],
+				summaries: [
+					{
+						phase: "queue",
+						sampleCount: 1,
+						knownReasoningCount: 0,
+						reasoningTokens: null,
+					},
+				],
 			});
 			database.connection.db
 				.delete(reviewTelemetry)

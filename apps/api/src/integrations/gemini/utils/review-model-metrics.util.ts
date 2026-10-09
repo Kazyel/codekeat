@@ -13,6 +13,7 @@ interface ModelMetricContext {
 	readonly attemptId: string;
 	readonly stage: "review" | "judge";
 	readonly completedResponses: Map<string, ReviewMetric>;
+	readonly reasoningTokens: Map<string, number>;
 	callId: string | null;
 	requestsInCall: number;
 }
@@ -32,6 +33,7 @@ export function withReviewModelMetrics<T>(
 		callId: null,
 		requestsInCall: 0,
 		completedResponses: new Map(),
+		reasoningTokens: new Map(),
 	};
 	return modelMetrics.run(context, async () => {
 		try {
@@ -41,6 +43,7 @@ export function withReviewModelMetrics<T>(
 			for (const metric of context.completedResponses.values())
 				execution.recordMetric(metric);
 			context.completedResponses.clear();
+			context.reasoningTokens.clear();
 		}
 	});
 }
@@ -105,13 +108,25 @@ export function beginModelCall(callId: string): void {
 	context.requestsInCall = 0;
 }
 
+/** Numeric receipt detail only; it is persisted with the matching validated usage event. */
+export function attachModelReasoningTokens(callId: string, reasoningTokens: number): void {
+	modelMetrics.getStore()?.reasoningTokens.set(callId, reasoningTokens);
+}
+
 function attachModelUsage(event: ReviewUsageEvent): void {
 	const context = modelMetrics.getStore();
 	if (context?.stage !== event.stage) return;
 	const metric = context.completedResponses.get(event.callId);
 	if (metric === undefined) return;
-	context.execution.recordMetric(createReviewMetric({ ...metric, usage: event.usage }));
+	context.execution.recordMetric(
+		createReviewMetric({
+			...metric,
+			usage: event.usage,
+			reasoningTokens: context.reasoningTokens.get(event.callId) ?? null,
+		}),
+	);
 	context.completedResponses.delete(event.callId);
+	context.reasoningTokens.delete(event.callId);
 }
 
 function completedModelResponse(metric: ReviewMetric): boolean {

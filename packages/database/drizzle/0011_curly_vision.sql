@@ -1,0 +1,1 @@
+ALTER TABLE `review_telemetry` ADD `reasoning_tokens` integer;

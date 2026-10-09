@@ -55,7 +55,8 @@ export function ReviewTelemetry({
 			</div>
 			<p className="text-sm text-muted-foreground">
 				Duração e consumo conhecidos de cada etapa. Cache é parte dos tokens de entrada. RSS
-				mede a memória do processo compartilhado.
+				mede a memória do processo compartilhado. Raciocínio já está incluído nos tokens de
+				saída e no custo.
 			</p>
 			{query.data ? (
 				<EventTable events={query.data.pages.flatMap((page) => page.events)} />
@@ -138,6 +139,7 @@ function EventTable({
 							"Resultado",
 							"Duração",
 							"Tokens entrada / saída",
+							"Raciocínio",
 							"Cache",
 							"Custo conhecido",
 							"Preflight tokens",
@@ -168,6 +170,7 @@ function EventTable({
 							<td className={CELL_CLASS}>{OUTCOME_LABEL[event.outcome]}</td>
 							<td className={CELL_CLASS}>{formatDuration(event.durationMs)}</td>
 							<td className={CELL_CLASS}>{usageTokens(event.usage)}</td>
+							<td className={CELL_CLASS}>{nullableCount(event.reasoningTokens)}</td>
 							<td className={CELL_CLASS}>
 								{nullableCount(event.usage?.cacheTokens ?? null)}
 							</td>
@@ -232,6 +235,7 @@ function SummaryTable({
 							"Retries",
 							"Limite excedido",
 							"Custo conhecido",
+							"Raciocínio conhecido",
 							"RSS processo",
 						].map((label) => (
 							<th className={CELL_CLASS} scope="col" key={label}>
@@ -275,6 +279,13 @@ function SummaryTable({
 								{summary.usage
 									? formatUsdMicros(summary.usage.costUsdMicros)
 									: "Não informado"}
+							</td>
+							<td className={CELL_CLASS}>
+								<span
+									title={`${summary.knownReasoningCount} amostras com raciocínio informado; já incluído na saída e no custo`}
+								>
+									{nullableCount(summary.reasoningTokens)}
+								</span>
 							</td>
 							<td className={CELL_CLASS}>
 								{formatInteger(Math.round(summary.peakRssBytes / 1_048_576))} MiB

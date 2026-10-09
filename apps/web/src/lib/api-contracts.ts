@@ -141,6 +141,7 @@ const telemetryEventSchema = z
 		durationMs: metricCountSchema,
 		outcome: z.enum(["success", "failed", "ignored", "cancelled"]),
 		usage: metricUsageSchema.nullable(),
+		reasoningTokens: metricCountSchema.nullable().default(null),
 		countedInputTokens: metricCountSchema.nullable(),
 		diffBytes: metricCountSchema.nullable(),
 		sourceBytes: metricCountSchema.nullable(),
@@ -151,7 +152,13 @@ const telemetryEventSchema = z
 		peakRssBytes: metricCountSchema,
 		capacityFailure: z.boolean(),
 	})
-	.strict();
+	.strict()
+	.refine(
+		(event) =>
+			event.reasoningTokens === null ||
+			(event.usage !== null && event.reasoningTokens <= event.usage.outputTokens),
+		{ message: "Reasoning tokens require known output usage." },
+	);
 const telemetrySummarySchema = z
 	.object({
 		period: z.string().min(1),
@@ -171,6 +178,8 @@ const telemetrySummarySchema = z
 		capacityFailureCount: metricCountSchema,
 		peakRssBytes: metricCountSchema,
 		knownUsageCount: metricCountSchema,
+		knownReasoningCount: metricCountSchema.default(0),
+		reasoningTokens: metricCountSchema.nullable().default(null),
 		usage: metricUsageSchema.nullable(),
 	})
 	.strict();

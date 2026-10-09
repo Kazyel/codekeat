@@ -24,6 +24,8 @@ const summaryRow = z
 		capacityFailureCount: count,
 		peakRssBytes: count,
 		knownUsageCount: count,
+		knownReasoningCount: count,
+		reasoningTokens: count.nullable(),
 		inputTokens: count.nullable(),
 		outputTokens: count.nullable(),
 		cacheTokens: count.nullable(),
@@ -68,6 +70,7 @@ export function queryReviewTelemetrySummaries(
 			sum(outcome='failed') AS failureCount,sum(outcome='cancelled') AS cancelledCount,sum(outcome='ignored') AS ignoredCount,
 			sum(request_count) AS requestCount,sum(cache_hit_count) AS cacheHitCount,sum(retry_count) AS retryCount,
 			sum(capacity_failure) AS capacityFailureCount,max(peak_rss_bytes) AS peakRssBytes,count(input_tokens) AS knownUsageCount,
+			count(reasoning_tokens) AS knownReasoningCount,sum(reasoning_tokens) AS reasoningTokens,
 			sum(input_tokens) AS inputTokens,sum(output_tokens) AS outputTokens,sum(cache_tokens) AS cacheTokens,sum(cost_usd_micros) AS costUsdMicros
 		FROM ranked GROUP BY period,phase,scope,size_band ORDER BY period,phase,scope,size_band
 	`);

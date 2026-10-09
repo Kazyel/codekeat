@@ -75,14 +75,20 @@ const conclusion = {
 		},
 	],
 };
-function response(output: string, withUsage = true): Response {
+function response(
+	output: string,
+	withUsage = true,
+	usageMetadata: Omit<typeof providerUsage, "thoughtsTokenCount"> & {
+		readonly thoughtsTokenCount?: number;
+	} = providerUsage,
+): Response {
 	const value = z.record(z.string(), z.json()).parse(JSON.parse(output));
 	if ("findings" in value) output = JSON.stringify({ conclusion, ...value });
 	return Response.json({
 		candidates: [
 			{ content: { role: "model", parts: [{ text: output }] }, finishReason: "STOP" },
 		],
-		...(withUsage ? { usageMetadata: providerUsage } : {}),
+		...(withUsage ? { usageMetadata } : {}),
 	});
 }
 
@@ -152,7 +158,11 @@ describe("review model telemetry through the guarded SDK transport", () => {
 		});
 		await harness.service.review(model, input, chunk, harness.execution);
 		expect(metricsBeforeTool).toEqual([
-			expect.objectContaining({ callId: harness.usage[0]?.callId, usage: expectedUsage }),
+			expect.objectContaining({
+				callId: harness.usage[0]?.callId,
+				usage: expectedUsage,
+				reasoningTokens: 2,
+			}),
 		]);
 		const transport = harness.metrics.filter((metric) => metric.phase === "generation");
 		expect(transport.map((metric) => metric.callId)).toEqual(
@@ -183,6 +193,7 @@ describe("review model telemetry through the guarded SDK transport", () => {
 			expect(transport[0]).toMatchObject({
 				callId: harness.usage[0]?.callId,
 				usage: expectedUsage,
+				reasoningTokens: 2,
 				requestCount: 1,
 				outcome: "success",
 			});
@@ -200,9 +211,31 @@ describe("review model telemetry through the guarded SDK transport", () => {
 			issue: "usage_metadata_invalid",
 		});
 		expect(harness.metrics.filter((metric) => metric.phase === "generation")).toEqual([
-			expect.objectContaining({ outcome: "success", usage: null, requestCount: 1 }),
+			expect.objectContaining({
+				outcome: "success",
+				usage: null,
+				reasoningTokens: null,
+				requestCount: 1,
+			}),
 		]);
 		expect(harness.usage).toEqual([]);
+	});
+
+	it("records zero reasoning only when the provider supplied a valid receipt with omitted thoughts", async () => {
+		const harness = fixture([
+			response(JSON.stringify({ findings: [] }), true, {
+				promptTokenCount: 100,
+				cachedContentTokenCount: 20,
+				candidatesTokenCount: 10,
+			}),
+		]);
+		await harness.service.review(model, input, chunk, harness.execution);
+		expect(harness.metrics.filter((metric) => metric.phase === "generation")).toEqual([
+			expect.objectContaining({
+				reasoningTokens: 0,
+				usage: { ...expectedUsage, outputTokens: 10, costUsdMicros: 99 },
+			}),
+		]);
 	});
 
 	it("measures failed tool preparation and the subsequent fallback independently", async () => {

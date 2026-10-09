@@ -25,6 +25,7 @@ export const reviewMetricSchema = z
 			})
 			.strict()
 			.nullable(),
+		reasoningTokens: nullableCount.default(null),
 		countedInputTokens: nullableCount,
 		diffBytes: nullableCount,
 		sourceBytes: nullableCount,
@@ -35,7 +36,16 @@ export const reviewMetricSchema = z
 		peakRssBytes: count,
 		capacityFailure: z.boolean(),
 	})
-	.strict();
+	.strict()
+	.refine(
+		(metric) =>
+			metric.reasoningTokens === null ||
+			(metric.usage !== null && metric.reasoningTokens <= metric.usage.outputTokens),
+		{
+			message:
+				"Reasoning tokens require a validated receipt and cannot exceed output tokens.",
+		},
+	);
 
 export type ReviewMetric = z.infer<typeof reviewMetricSchema>;
 export type ReviewMetricRecorder = (metric: ReviewMetric) => void;
@@ -53,6 +63,7 @@ export function createReviewMetric(
 		callId: null,
 		unitId: null,
 		usage: null,
+		reasoningTokens: null,
 		countedInputTokens: null,
 		diffBytes: null,
 		sourceBytes: null,
@@ -67,7 +78,7 @@ export function createReviewMetric(
 	});
 }
 
-export const reviewMetricEventSchema = reviewMetricSchema.extend({
+export const reviewMetricEventSchema = reviewMetricSchema.safeExtend({
 	id: z.uuid(),
 	reviewRunId: z.uuid(),
 	createdAt: z.iso.datetime(),
@@ -100,5 +111,7 @@ export interface ReviewTelemetrySummary {
 	readonly capacityFailureCount: number;
 	readonly peakRssBytes: number;
 	readonly knownUsageCount: number;
+	readonly knownReasoningCount: number;
+	readonly reasoningTokens: number | null;
 	readonly usage: ReviewMetric["usage"];
 }

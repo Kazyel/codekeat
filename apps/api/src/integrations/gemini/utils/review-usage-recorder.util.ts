@@ -2,6 +2,7 @@ import type { LanguageModelUsage } from "ai";
 import { z } from "zod";
 
 import type { ReviewModelConfiguration } from "#features/models";
+import { attachModelReasoningTokens } from "./review-model-metrics.util.js";
 import {
 	calculateReviewTokenCost,
 	ReviewModelResponseError,
@@ -65,7 +66,9 @@ export class ReviewUsageRecorder {
 		this.throwIfFailed();
 		const key = `${event.callId}:${event.stepNumber}`;
 		if (this.events.has(key)) return;
-		const usage = parseTokenUsage(event.usage, this.model);
+		const receipt = parseTokenUsage(event.usage, this.model);
+		const usage = receipt.usage;
+		attachModelReasoningTokens(event.callId, receipt.reasoningTokens);
 		this.execution.recordUsage({
 			stage: this.stage,
 			callId: event.callId,
@@ -92,17 +95,23 @@ export class ReviewUsageRecorder {
 function parseTokenUsage(
 	usage: LanguageModelUsage,
 	model: ReviewModelConfiguration,
-): ReviewTokenUsage {
+): { readonly usage: ReviewTokenUsage; readonly reasoningTokens: number } {
 	const parsed = USAGE_SCHEMA.safeParse(usage);
-	if (!parsed.success || !GOOGLE_USAGE_SCHEMA.safeParse(usage.raw).success) {
+	const provider = GOOGLE_USAGE_SCHEMA.safeParse(usage.raw);
+	if (!parsed.success || !provider.success) {
 		throw new ReviewModelResponseError("usage_metadata_invalid");
 	}
 	const { inputTokens, outputTokens } = parsed.data;
+	if (provider.data.thoughtsTokenCount > outputTokens)
+		throw new ReviewModelResponseError("usage_metadata_invalid");
 	const cacheTokens = parsed.data.inputTokenDetails.cacheReadTokens;
 	const costUsdMicros = calculateReviewTokenCost(model, {
 		inputTokens,
 		outputTokens,
 		cacheTokens,
 	});
-	return { inputTokens, outputTokens, cacheTokens, costUsdMicros };
+	return {
+		usage: { inputTokens, outputTokens, cacheTokens, costUsdMicros },
+		reasoningTokens: provider.data.thoughtsTokenCount,
+	};
 }

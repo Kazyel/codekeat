@@ -23,6 +23,7 @@ export const reviewTelemetry = sqliteTable(
 		}).notNull(),
 		inputTokens: integer("input_tokens"),
 		outputTokens: integer("output_tokens"),
+		reasoningTokens: integer("reasoning_tokens"),
 		cacheTokens: integer("cache_tokens"),
 		costUsdMicros: real("cost_usd_micros"),
 		countedInputTokens: integer("counted_input_tokens"),
