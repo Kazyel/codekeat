@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 
-import { Data, Effect, Result } from "effect";
+import { Data, Effect, Exit, Result } from "effect";
 import type { Logger } from "pino";
 
 import {
@@ -39,6 +39,7 @@ const EMPTY_USAGE: ReviewTokenUsage = {
 	cacheTokens: 0,
 	costUsdMicros: 0,
 };
+type ReviewStageOutcome = "completed" | "failed" | "ignored";
 
 type AnalysisOutcome =
 	| Exclude<ReviewInputLoadResult, { readonly kind: "ready" }>
@@ -106,16 +107,52 @@ export class ReviewRunProcessorService {
 		ledger: ReviewUsageLedger,
 	): Effect.Effect<AnalysisOutcome, ReviewProcessingFailure> {
 		return Effect.gen({ self: this }, function* () {
-			const loaded = yield* this.loadInput(run);
+			const loaded = yield* this.observeStage(
+				run,
+				"context_load",
+				this.loadInput(run),
+				inputStageOutcome,
+			);
 			if (loaded.kind !== "ready") return loaded;
-			const candidates = yield* this.generateCandidates(run.model, loaded.input, ledger);
-			const findings = yield* this.judgeCandidates(
-				run.model,
-				loaded.input,
-				candidates,
-				ledger,
+			const candidates = yield* this.observeStage(
+				run,
+				"candidate_generation",
+				this.generateCandidates(run.model, loaded.input, ledger),
+			);
+			const findings = yield* this.observeStage(
+				run,
+				"candidate_judgment",
+				this.judgeCandidates(run.model, loaded.input, candidates, ledger),
 			);
 			return { kind: "completed", input: loaded.input, findings } as const;
+		});
+	}
+
+	private observeStage<A>(
+		run: RunnableReviewRun,
+		stage: "context_load" | "candidate_generation" | "candidate_judgment",
+		program: Effect.Effect<A, ReviewProcessingFailure>,
+		describeOutcome: (value: A) => ReviewStageOutcome = () => "completed",
+	): Effect.Effect<A, ReviewProcessingFailure> {
+		return Effect.suspend(() => {
+			const startedAt = performance.now();
+			return program.pipe(
+				Effect.onExit((exit) =>
+					Effect.sync(() =>
+						this.logger.info(
+							{
+								reviewRunId: run.id,
+								stage,
+								durationMs: elapsedMilliseconds(startedAt),
+								outcome: Exit.isSuccess(exit)
+									? describeOutcome(exit.value)
+									: "failed",
+							},
+							"review_run.stage_finished",
+						),
+					),
+				),
+			);
 		});
 	}
 
@@ -357,6 +394,10 @@ export class ReviewRunProcessorService {
 }
 
 type JudgmentValidationReason = "coverage_mismatch" | "invalid_judgment" | "unchanged_severity";
+function inputStageOutcome(input: ReviewInputLoadResult): ReviewStageOutcome {
+	if (input.kind === "ready") return "completed";
+	return input.kind;
+}
 type JudgmentValidationResult =
 	| { readonly kind: "valid"; readonly judgments: readonly FindingJudgment[] }
 	| { readonly kind: "invalid"; readonly reason: JudgmentValidationReason };

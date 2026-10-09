@@ -50,9 +50,12 @@ class ReadyInputSource implements ReviewInputSource {
 	}
 }
 
-class IgnoredInputSource implements ReviewInputSource {
+class StoppedInputSource implements ReviewInputSource {
+	constructor(
+		private readonly result: Exclude<ReviewInputLoadResult, { readonly kind: "ready" }>,
+	) {}
 	async load(): Promise<ReviewInputLoadResult> {
-		return { kind: "ignored", ignoreReason: "superseded_head_sha" };
+		return this.result;
 	}
 }
 
@@ -618,11 +621,14 @@ describe("ReviewRunProcessorService", () => {
 
 	it("maps an invalid reviewer response to a sanitized error", async () => {
 		const database = createReviewRun();
+		const logger = pino({ enabled: false });
+		const info = vi.spyOn(logger, "info");
 		const processor = createProcessor(
 			database,
 			new ReadyInputSource(ONE_CHUNK_INPUT),
 			new FailingModel(),
 			new RecordedJudge(),
+			logger,
 		);
 
 		await processor.process(REVIEW_RUN_ID);
@@ -631,28 +637,69 @@ describe("ReviewRunProcessorService", () => {
 			status: "failed",
 			errorCode: "gemini_invalid_response",
 		});
+		expect(info.mock.calls.filter((call) => call[1] === "review_run.stage_finished")).toEqual([
+			[
+				{
+					reviewRunId: REVIEW_RUN_ID,
+					stage: "context_load",
+					durationMs: expect.any(Number),
+					outcome: "completed",
+				},
+				"review_run.stage_finished",
+			],
+			[
+				{
+					reviewRunId: REVIEW_RUN_ID,
+					stage: "candidate_generation",
+					durationMs: expect.any(Number),
+					outcome: "failed",
+				},
+				"review_run.stage_finished",
+			],
+		]);
 		database.close();
 	});
 
-	it("ignores an outdated head SHA without calling the model", async () => {
-		const database = createReviewRun();
-		const model = new RecordedModel([]);
-		const processor = createProcessor(
-			database,
-			new IgnoredInputSource(),
-			model,
-			new RecordedJudge(),
-		);
+	it.each([
+		{
+			result: { kind: "ignored", ignoreReason: "superseded_head_sha" },
+			stored: { status: "ignored", ignoreReason: "superseded_head_sha" },
+		},
+		{
+			result: { kind: "failed", errorCode: "github_diff_unavailable" },
+			stored: { status: "failed", errorCode: "github_diff_unavailable" },
+		},
+	] as const)(
+		"records $result.kind context without calling the model",
+		async ({ result, stored }) => {
+			const database = createReviewRun();
+			const model = new RecordedModel([]);
+			const logger = pino({ enabled: false });
+			const info = vi.spyOn(logger, "info");
+			const processor = createProcessor(
+				database,
+				new StoppedInputSource(result),
+				model,
+				new RecordedJudge(),
+				logger,
+			);
 
-		await processor.process(REVIEW_RUN_ID);
+			await processor.process(REVIEW_RUN_ID);
 
-		expect(model.chunkIndexes).toEqual([]);
-		expect(readRun(database)).toMatchObject({
-			status: "ignored",
-			ignoreReason: "superseded_head_sha",
-		});
-		database.close();
-	});
+			expect(model.chunkIndexes).toEqual([]);
+			expect(readRun(database)).toMatchObject(stored);
+			expect(info).toHaveBeenCalledWith(
+				{
+					reviewRunId: REVIEW_RUN_ID,
+					stage: "context_load",
+					durationMs: expect.any(Number),
+					outcome: result.kind,
+				},
+				"review_run.stage_finished",
+			);
+			database.close();
+		},
+	);
 });
 
 function approveAll(batch: ReviewFindingJudgeInput): ReviewFindingJudgmentResult {
