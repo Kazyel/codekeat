@@ -5,7 +5,16 @@ import {
 	type ReviewInput,
 	type ReviewInputChunk,
 	type ReviewInvestigation,
+	type ReviewRepositoryContext,
 } from "#features/review";
+
+interface RepositoryContextIndex {
+	readonly componentByPath: ReadonlyMap<string, number>;
+	readonly manifest: string;
+}
+
+// Repository contexts are immutable snapshots. Weak keys release the index with its run.
+const contextIndexes = new WeakMap<ReviewRepositoryContext, RepositoryContextIndex>();
 
 export function createReviewSystemPrompt(): string {
 	return [
@@ -85,7 +94,8 @@ export function createJudgePrompt(input: ReviewInput, batch: ReviewFindingJudgeI
 }
 
 function createReviewBackground(input: ReviewInput, paths: readonly string[]): string {
-	const relevant = relevantContextFiles(input, paths);
+	const index = repositoryContextIndex(input.repositoryContext);
+	const relevant = relevantContextFiles(input.repositoryContext, index, paths);
 	return [
 		`Repositório: ${input.repositoryFullName}`,
 		`PR: #${input.pullRequestNumber}`,
@@ -94,21 +104,53 @@ function createReviewBackground(input: ReviewInput, paths: readonly string[]): s
 		`SHA base: ${input.baseSha}`,
 		`SHA head: ${input.headSha}`,
 		`Contexto inicial do repositório: ${JSON.stringify({ ...input.repositoryContext, files: relevant })}`,
-		`Manifesto de fontes disponíveis: ${JSON.stringify(input.repositoryContext.files.map(({ path, kind }) => ({ path, kind, repositoryFullName: input.repositoryContext.repositoryFullName, revision: input.repositoryContext.revision })))}`,
+		`Manifesto de fontes disponíveis: ${index.manifest}`,
 	].join("\n\n");
 }
 
 function relevantContextFiles(
-	input: ReviewInput,
+	context: ReviewRepositoryContext,
+	index: RepositoryContextIndex,
 	paths: readonly string[],
 ): readonly ReviewContextFile[] {
-	const selected = connectedContextPaths(contextAdjacency(input.repositoryContext.files), paths);
-	return input.repositoryContext.files.filter(
+	const selected = new Set(paths.map((path) => index.componentByPath.get(path)));
+	return context.files.filter(
 		(file) =>
 			file.path === ".codekeat" ||
 			file.path.startsWith(".codekeat/") ||
-			selected.has(file.path),
+			selected.has(index.componentByPath.get(file.path)),
 	);
+}
+
+function repositoryContextIndex(context: ReviewRepositoryContext): RepositoryContextIndex {
+	const cached = contextIndexes.get(context);
+	if (cached !== undefined) return cached;
+	const index = {
+		componentByPath: contextComponents(context.files),
+		manifest: JSON.stringify(
+			context.files.map(({ path, kind }) => ({
+				path,
+				kind,
+				repositoryFullName: context.repositoryFullName,
+				revision: context.revision,
+			})),
+		),
+	};
+	contextIndexes.set(context, index);
+	return index;
+}
+
+function contextComponents(files: readonly ReviewContextFile[]): ReadonlyMap<string, number> {
+	const graph = contextAdjacency(files);
+	const componentByPath = new Map<string, number>();
+	let component = 0;
+	for (const path of graph.keys()) {
+		if (componentByPath.has(path)) continue;
+		for (const connected of connectedContextPaths(graph, [path]))
+			componentByPath.set(connected, component);
+		component++;
+	}
+	return componentByPath;
 }
 
 function contextAdjacency(
